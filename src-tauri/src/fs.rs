@@ -1183,6 +1183,40 @@ pub async fn git_pr_status(cwd: String) -> Result<Option<GitPr>, String> {
         .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPrChecksSummary {
+    pub passed: u32,
+    pub failed: u32,
+    pub pending: u32,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPrDetails {
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub mergeable: String,
+    pub merge_state_status: String,
+    pub base_ref_name: String,
+    pub head_ref_name: String,
+    pub head_oid: String,
+    /// Local branch the pull request was resolved from.
+    pub branch: String,
+    pub checks: GitPrChecksSummary,
+}
+
+/// Pull request for the checked-out branch with merge and check state, via `gh pr view`.
+#[tauri::command]
+pub async fn git_pr_details(cwd: String) -> Result<Option<GitPrDetails>, String> {
+    tauri::async_runtime::spawn_blocking(move || git_pr_details_for(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[derive(Deserialize)]
 struct GitPrCreateInput {
     title: String,
@@ -2890,6 +2924,91 @@ fn git_pr_status_for(root: &Path) -> Option<GitPr> {
         ],
     )?;
     parse_gh_pr_list(&json)
+}
+
+fn git_pr_details_for(root: &Path) -> Result<Option<GitPrDetails>, String> {
+    let Some(branch) = git_head_branch(root) else {
+        return Ok(None);
+    };
+    let json = match gh_checked(
+        root,
+        &[
+            "pr",
+            "view",
+            "--json",
+            "number,title,url,state,isDraft,mergeable,mergeStateStatus,baseRefName,headRefName,headRefOid,statusCheckRollup",
+        ],
+    ) {
+        Ok(json) => json,
+        Err(error) if error.to_lowercase().contains("no pull requests found") => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    parse_gh_pr_details(&json, branch).map(Some)
+}
+
+fn parse_gh_pr_details(json: &str, branch: String) -> Result<GitPrDetails, String> {
+    #[derive(Deserialize, Default)]
+    #[serde(rename_all = "camelCase", default)]
+    struct Check {
+        status: String,
+        conclusion: String,
+        state: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Row {
+        number: i64,
+        title: String,
+        url: String,
+        state: String,
+        #[serde(default)]
+        is_draft: bool,
+        #[serde(default)]
+        mergeable: String,
+        #[serde(default)]
+        merge_state_status: String,
+        #[serde(default)]
+        base_ref_name: String,
+        #[serde(default)]
+        head_ref_name: String,
+        #[serde(default)]
+        head_ref_oid: String,
+        #[serde(default)]
+        status_check_rollup: Option<Vec<Check>>,
+    }
+    let row: Row = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let mut checks = GitPrChecksSummary::default();
+    for check in row.status_check_rollup.unwrap_or_default() {
+        // Check runs report status and conclusion; commit statuses report state.
+        let outcome = if check.state.is_empty() {
+            if check.status.eq_ignore_ascii_case("completed") {
+                check.conclusion.to_uppercase()
+            } else {
+                "PENDING".into()
+            }
+        } else {
+            check.state.to_uppercase()
+        };
+        match outcome.as_str() {
+            "SUCCESS" | "NEUTRAL" | "SKIPPED" => checks.passed += 1,
+            "PENDING" | "EXPECTED" | "" => checks.pending += 1,
+            _ => checks.failed += 1,
+        }
+    }
+    Ok(GitPrDetails {
+        number: row.number,
+        title: row.title,
+        url: row.url,
+        state: row.state.to_lowercase(),
+        is_draft: row.is_draft,
+        mergeable: row.mergeable,
+        merge_state_status: row.merge_state_status,
+        base_ref_name: row.base_ref_name,
+        head_ref_name: row.head_ref_name,
+        head_oid: row.head_ref_oid,
+        branch,
+        checks,
+    })
 }
 
 fn github_pr_head_filter(repo: &str, branch: &str) -> Option<String> {
@@ -8264,6 +8383,22 @@ mod tests {
         assert_eq!(pr.number, 3);
         assert_eq!(pr.state, "open");
         assert_eq!(pr.title, "Now");
+    }
+
+    #[test]
+    fn parse_gh_pr_details_summarizes_checks() {
+        let json = r#"{"number":7,"title":"Add x","url":"https://github.com/o/r/pull/7","state":"OPEN","isDraft":false,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","baseRefName":"main","headRefName":"feat","headRefOid":"abc","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},{"__typename":"StatusContext","state":"ERROR"},{"__typename":"StatusContext","state":"PENDING"}]}"#;
+        let pr = parse_gh_pr_details(json, "feat".into()).unwrap();
+        assert_eq!(pr.state, "open");
+        assert_eq!(pr.mergeable, "CONFLICTING");
+        assert_eq!(
+            pr.checks,
+            GitPrChecksSummary {
+                passed: 1,
+                failed: 2,
+                pending: 2
+            }
+        );
     }
 
     #[test]

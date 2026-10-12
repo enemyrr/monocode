@@ -385,6 +385,24 @@ export function gitPrStatus(cwd: string): Promise<GitPr | null> {
   return invoke<GitPr | null>("git_pr_status", { cwd });
 }
 
+export type GitPrDetails = GitPr & {
+  isDraft: boolean;
+  /** GitHub's `MERGEABLE`, `CONFLICTING` or `UNKNOWN`. */
+  mergeable: string;
+  mergeStateStatus: string;
+  baseRefName: string;
+  headRefName: string;
+  headOid: string;
+  /** Local branch the pull request was resolved from. */
+  branch: string;
+  checks: { passed: number; failed: number; pending: number };
+};
+
+/** Pull request for the checked-out branch, or null when it has none. */
+export function gitPrDetails(cwd: string): Promise<GitPrDetails | null> {
+  return invoke<GitPrDetails | null>("git_pr_details", { cwd });
+}
+
 export function gitPrCreate(
   cwd: string,
   title: string,
