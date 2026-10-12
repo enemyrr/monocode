@@ -47,9 +47,9 @@ export function runShellCommand({
     ...(inTurn ? { inTurn: true } : {}),
   };
   const finish = (patch: Partial<ShellRunMeta>) => {
+    onUpdate(shellRunBlock({ ...run, ...patch }));
     liveOutput.delete(run.runId);
     notify();
-    onUpdate(shellRunBlock({ ...run, ...patch }));
   };
   let head = "";
   liveOutput.set(run.runId, head);

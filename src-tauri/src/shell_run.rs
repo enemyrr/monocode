@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,7 +23,11 @@ const TAIL_BYTES: usize = 64 * 1024;
 const READ_CHUNK: usize = 16 * 1024;
 const COALESCE: Duration = Duration::from_millis(16);
 const FLUSH_BYTES: usize = 32 * 1024;
-/// A background child can hold the pipe open after the shell exits.
+/// Chunks waiting for the pump. A full queue blocks the readers, so a flood
+/// such as `yes` cannot outgrow memory before the cap applies.
+const QUEUE_CHUNKS: usize = 64;
+/// A background child can hold the pipe open after the shell exits. Past
+/// this grace the rest of the process group is stopped.
 const DRAIN_GRACE: Duration = Duration::from_millis(250);
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 
@@ -103,16 +107,17 @@ pub fn shell_run_start(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to run command: {e}"))?;
+    let pid = child.id();
     let cancelled = Arc::new(AtomicBool::new(false));
     runs.lock().insert(
         id.clone(),
         LiveRun {
-            pid: child.id(),
+            pid,
             cancelled: cancelled.clone(),
         },
     );
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(QUEUE_CHUNKS);
     let mut readers = 0;
     if let Some(out) = child.stdout.take() {
         spawn_reader(out, tx.clone());
@@ -126,7 +131,7 @@ pub fn shell_run_start(
         let code = child.wait().ok().and_then(|status| status.code());
         let _ = tx.send(Event::Exit(code));
     });
-    thread::spawn(move || pump(app, id, rx, readers, cancelled));
+    thread::spawn(move || pump(app, id, pid, rx, readers, cancelled));
     Ok(())
 }
 
@@ -175,7 +180,7 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-fn spawn_reader(mut source: impl Read + Send + 'static, tx: Sender<Event>) {
+fn spawn_reader(mut source: impl Read + Send + 'static, tx: SyncSender<Event>) {
     thread::spawn(move || {
         let mut buf = vec![0_u8; READ_CHUNK];
         loop {
@@ -195,6 +200,7 @@ fn spawn_reader(mut source: impl Read + Send + 'static, tx: Sender<Event>) {
 fn pump(
     app: AppHandle,
     id: String,
+    pid: u32,
     rx: Receiver<Event>,
     mut open: usize,
     cancelled: Arc<AtomicBool>,
@@ -228,6 +234,10 @@ fn pump(
             last_emit = Instant::now();
         }
         if exited_at.is_some_and(|at| open == 0 || at.elapsed() >= DRAIN_GRACE) {
+            if open > 0 {
+                // Closes the pipes those children hold, so the readers end.
+                crate::harness::terminate(pid);
+            }
             break;
         }
     }

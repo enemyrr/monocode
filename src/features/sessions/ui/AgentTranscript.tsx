@@ -82,7 +82,7 @@ import { resolveModel } from "../model/models";
 import { harnessForTurn } from "../model/secondOpinion";
 import { TranscriptTurnCache } from "../model/transcriptTurnCache";
 import { Shimmer } from "../../../shared/ui/Shimmer";
-import { ShellRunRow } from "./shell-run-row";
+import { ShellRunRow, ShellRunSendContext } from "./shell-run-row";
 import {
   hasPendingApproval,
   HARNESS_TITLE,
@@ -230,6 +230,8 @@ type Props = {
   backgroundTasks?: string[];
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onAddToChat?: (text: string) => void;
+  /** Puts a finished `!<command>` run's result in the composer. */
+  onSendShellRun?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
@@ -1691,7 +1693,13 @@ function TranscriptContent({
 
 // Keep hidden panes' local state, and catch up with current props on activation.
 export const AgentTranscript = memo(
-  AgentTranscriptComponent,
+  function AgentTranscript(props: Props) {
+    return (
+      <ShellRunSendContext.Provider value={props.onSendShellRun}>
+        <AgentTranscriptComponent {...props} />
+      </ShellRunSendContext.Provider>
+    );
+  },
   (previous, next) => previous.visible === false && next.visible === false,
 );
 
