@@ -1,4 +1,5 @@
 import type { HarnessId } from "../../sessions/model/session";
+import { runtimeProviderBinaryPath } from "../../providers/model/providerBinaryPaths";
 
 /** A coding-agent CLI run as its own TUI in a terminal tab, not a MonoCode session. */
 export type TerminalProfile = {
@@ -31,13 +32,16 @@ export function asTerminalProfileId(
     : undefined;
 }
 
-/** Command and argv for `pty_spawn`; a plain terminal has none. */
+/**
+ * Command and argv for `pty_spawn`; a plain terminal has none. A binary path
+ * set in provider settings wins over the bare command name.
+ */
 export function terminalLaunch(
   id: TerminalProfileId | undefined,
 ): { command: string; args: string[] } | undefined {
   if (!id) return undefined;
   const { command, args } = terminalProfile(id);
-  return { command, args: [...args] };
+  return { command: runtimeProviderBinaryPath(id) ?? command, args: [...args] };
 }
 
 /** Before the first probe every profile shows; after it, only installed CLIs. */

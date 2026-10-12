@@ -456,7 +456,7 @@ export function TerminalView({
     if (!active) return;
     applySizeRef.current();
     termRef.current?.focus();
-  }, [active]);
+  }, [active, run]);
 
   return (
     <div
