@@ -315,6 +315,8 @@ type Props = {
   onOpenProject?: () => void;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
+  /** The ⌘T "+" buttons; follows the "New tab opens" setting. */
+  onNewTab?: () => void;
   onNewTerminal?: () => void;
   onSearch?: () => void;
   onOpenInbox?: () => void;
@@ -412,6 +414,7 @@ function SidebarComponent({
   onOpenProject,
   onRemoveProject,
   onNew,
+  onNewTab = onNew,
   onSearch,
   onOpenInbox,
   onOpenInboxItem,
@@ -1677,7 +1680,7 @@ function SidebarComponent({
           </span>
         )}
       </div>
-      <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
+      <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNewTab} />
     </div>
   );
 
@@ -1726,7 +1729,7 @@ function SidebarComponent({
               onSelectProject={onSelectProject}
               onOpenProject={onOpenProject}
               onRemoveProject={onRemoveProject}
-              onNew={onNew}
+              onNew={onNewTab}
               onSearch={onSearch}
               onOpenInbox={onOpenInbox}
               onOpenNotificationSettings={onOpenNotificationSettings}

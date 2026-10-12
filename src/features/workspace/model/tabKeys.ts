@@ -16,7 +16,7 @@
  *   Cycle previous tab  ctrl-shift-tab
  *   Focus pane          cmd-opt-arrows
  *   New terminal        cmd-`
- *   New terminal tab    shift-cmd-`
+ *   New terminal tab    shift-cmd-t (shift-cmd-` where the key exists)
  *   Toggle terminal     cmd-j
  *   Zoom in             cmd-= (cmd-+ on shift layouts)
  *   Zoom out            cmd--
@@ -87,6 +87,7 @@ export function tabCommand(e: KeyboardEvent): TabCommand | null {
 
   if (e.shiftKey) {
     if (key === "a" && !e.repeat) return "archive-session";
+    if (key === "t") return "new-terminal-tab";
     if (e.key === "]" || e.key === "}") return "next";
     if (e.key === "[" || e.key === "{") return "prev";
     if (e.key === "ArrowUp") return "prev-session";

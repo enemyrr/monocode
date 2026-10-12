@@ -84,6 +84,8 @@ export type Tab = {
   groupId?: string;
   dirty?: boolean;
   terminal?: boolean;
+  /** CLI profile of the focused terminal in a terminal-only tab. */
+  terminalProfile?: TerminalProfileId;
   /** File id when the whole tab is one preview file; double-click pins it. */
   previewFileId?: string;
 };
@@ -367,6 +369,13 @@ function TitleTabItem({
             doneHarnesses={tab.doneHarnesses ?? []}
             dimmed={!active}
           />
+        ) : tab.terminalProfile ? (
+          <span className={!active ? "opacity-55" : undefined}>
+            <HarnessIcon
+              harness={tab.terminalProfile}
+              className="size-3.5 shrink-0"
+            />
+          </span>
         ) : tab.terminal || !fileIcon ? (
           <Terminal
             className={`size-3.5 shrink-0 ${

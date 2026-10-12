@@ -205,7 +205,6 @@ import {
   newTab,
   newTerminalFile,
   newTerminalWorkspaceTab,
-  nextTerminalTitle,
   openChangesTab,
   openCommitTab,
   newAgentTab,
@@ -214,7 +213,6 @@ import {
   pinEditorFile,
   openWorkspaceFile,
   previewWorkspaceFile,
-  openTerminalTab,
   removePane,
   resetTabToSession,
   replaceLeafId,
@@ -275,6 +273,10 @@ import {
   asTerminalProfileId,
   type TerminalProfileId,
 } from "../features/terminal/model/terminal-profiles";
+import {
+  loadNewTabTarget,
+  newTabTerminal,
+} from "../features/settings/model/new-tab-target";
 import {
   applyHarnessEvent,
   applyHarnessEvents,
@@ -1021,6 +1023,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
       tab.fileFocused === other.fileFocused &&
       tab.blank === other.blank &&
       tab.terminal === other.terminal &&
+      tab.terminalProfile === other.terminalProfile &&
       tab.previewFileId === other.previewFileId &&
       tab.groupId === other.groupId
     );
@@ -2963,53 +2966,27 @@ function Workspace({
   const onOpenTerminal = useCallback(
     (
       cwd: string,
-      asWorkspaceTab = false,
-      occupySessionId?: string,
+      placement: "dock" | "tab" = "dock",
       profile?: TerminalProfileId,
     ) => {
       const workdir = cwd || terminalCwd;
       if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir))
-        return;
-      if (openProjectTerminal(workdir, profile)) return;
-
-      if (asWorkspaceTab || !activeTab) {
-        const file = newTerminalFile(workdir, undefined, sidebarCwd, profile);
-        const tab = newTerminalWorkspaceTab(file);
-        appendTab(tab, sidebarCwd);
-        setActiveTabId(tab.id);
-        setComposerFocused(false);
-        return;
-      }
-
-      const occupying = sessionsRef.current.find(
-        (session) => session.id === (occupySessionId ?? activeTab.focusedId),
+        return false;
+      if (placement === "dock") return openProjectTerminal(workdir, profile);
+      const tab = newTerminalWorkspaceTab(
+        newTerminalFile(workdir, undefined, sidebarCwd, profile),
       );
-      const occupyPaneId =
-        occupying && isBlankSession(occupying) ? occupying.id : undefined;
-      if (occupyPaneId && occupying) {
-        lastPersisted.current.delete(occupyPaneId);
-        void forgetHarnessSession(occupying.harness, occupyPaneId);
-        setSessions((prev) =>
-          prev.filter((session) => session.id !== occupyPaneId),
-        );
-      }
-
-      const file = newTerminalFile(
-        workdir,
-        nextTerminalTitle(activeTab, workdir),
-        sidebarCwd,
-        profile,
-      );
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.id === activeTab.id
-            ? openTerminalTab(tab, file, occupyPaneId)
-            : tab,
-        ),
-      );
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      appendTab(tab, sidebarCwd);
+      setActiveTabId(tab.id);
+      setProjectTerminalFocused(false);
       setComposerFocused(false);
+      return true;
     },
-    [terminalCwd, activeTab, appendTab, openProjectTerminal, sidebarCwd],
+    [terminalCwd, appendTab, openProjectTerminal, sidebarCwd],
   );
 
   const onNewTerminal = useCallback(() => {
@@ -3017,8 +2994,16 @@ function Workspace({
   }, [terminalCwd, onOpenTerminal]);
 
   const onNewProfileTerminal = useCallback(
-    (profile: TerminalProfileId) =>
-      onOpenTerminal(terminalCwd, false, undefined, profile),
+    (profile: TerminalProfileId) => {
+      onOpenTerminal(terminalCwd, "tab", profile);
+    },
+    [terminalCwd, onOpenTerminal],
+  );
+
+  const onNewDockProfileTerminal = useCallback(
+    (profile: TerminalProfileId) => {
+      onOpenTerminal(terminalCwd, "dock", profile);
+    },
     [terminalCwd, onOpenTerminal],
   );
 
@@ -3053,8 +3038,7 @@ function Workspace({
       if (session?.worktreeRemoved) return;
       onOpenTerminal(
         session ? sessionWorkCwd(session) : projectCwd,
-        false,
-        sessionId,
+        profile ? "tab" : "dock",
         profile,
       );
     },
@@ -3252,7 +3236,7 @@ function Workspace({
   );
 
   const onNewTerminalTab = useCallback(() => {
-    onOpenTerminal(terminalCwd, true);
+    onOpenTerminal(terminalCwd, "tab");
   }, [terminalCwd, onOpenTerminal]);
 
   const onCloseTab = useCallback(
@@ -3918,11 +3902,18 @@ function Workspace({
     );
   }, []);
 
+  /** Opens what "New tab opens" names; a remote project falls back to a chat. */
+  const onNewTab = useCallback(() => {
+    const terminal = newTabTerminal(loadNewTabTarget());
+    if (!terminal || !onOpenTerminal(terminalCwd, "tab", terminal.profile))
+      onNew();
+  }, [onNew, onOpenTerminal, terminalCwd]);
+
   /** ⌘T / Ctrl+T: add a dock terminal while the dock has focus, else a tab. */
   const onNewFocused = useCallback(() => {
     if (focusedDockTerminal()) onNewTerminal();
-    else onNew();
-  }, [focusedDockTerminal, onNew, onNewTerminal]);
+    else onNewTab();
+  }, [focusedDockTerminal, onNewTab, onNewTerminal]);
 
   /** ⌘W / Ctrl+W: close the focused dock terminal, else the focused pane. */
   const onCloseFocused = useCallback(() => {
@@ -12948,6 +12939,7 @@ function Workspace({
               monos={sidebarMonos}
               monoViewActive={monoCovers}
               onNew={onNew}
+              onNewTab={onNewTab}
               openSessions={openProjectSessions}
               onNewTerminal={onNewTerminal}
               onSearch={onOpenSearch}
@@ -13008,8 +13000,9 @@ function Workspace({
               >
                 {!IS_MAC ? (
                   <MenuBar
-                    onNew={onNew}
+                    onNew={onNewTab}
                     onNewTerminal={onNewTerminal}
+                    onNewTerminalTab={onNewTerminalTab}
                     onNewProfileTerminal={onNewProfileTerminal}
                     onToggleTerminal={onToggleProjectTerminal}
                     onGoToFile={onGoToFile}
@@ -13074,7 +13067,7 @@ function Workspace({
                                 onSizePaint={paintDockSize}
                                 onSizeCommit={commitDockSize}
                                 onAddTerminal={onNewTerminal}
-                                onAddProfileTerminal={onNewProfileTerminal}
+                                onAddProfileTerminal={onNewDockProfileTerminal}
                                 onSelectTerminal={onSelectProjectTerminal}
                                 onCloseTerminal={onCloseProjectTerminal}
                                 onCloseOtherTerminals={
@@ -13660,6 +13653,10 @@ function toTitleTab(
       ),
     ),
     terminal: hasTerminal && harnesses.length === 0,
+    terminalProfile:
+      harnesses.length === 0 && focusedFile?.terminal
+        ? focusedFile.profile
+        : undefined,
     previewFileId: previewWorkspaceFile(tab)?.id,
     groupId: tab.groupId,
   };

@@ -272,7 +272,7 @@ fn build(
         app,
         "new_terminal_tab",
         "New Terminal Tab",
-        "CmdOrCtrl+Shift+`",
+        "CmdOrCtrl+Shift+T",
         "Terminal: New Tab",
         overrides,
     )?;
