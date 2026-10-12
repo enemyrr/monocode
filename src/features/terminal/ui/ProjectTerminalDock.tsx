@@ -28,6 +28,11 @@ import {
 import { MOD } from "../../../platform/tauri/platform";
 import type { TerminalMetaPatch } from "../model/terminalTab";
 import { lazySurface } from "../../../shared/ui/lazySurface";
+import {
+  asTerminalProfileId,
+  type TerminalProfileId,
+} from "../model/terminal-profiles";
+import { useTerminalProfiles } from "./use-terminal-profiles";
 
 const TerminalView = lazySurface(async () => {
   const module = await import("./TerminalView");
@@ -43,6 +48,7 @@ type Props = {
   onSizePaint: (size: number) => void;
   onSizeCommit: (size: number) => void;
   onAddTerminal: () => void;
+  onAddProfileTerminal?: (profile: TerminalProfileId) => void;
   onSelectTerminal: (fileId: string) => void;
   onCloseTerminal: (fileId: string) => void;
   onCloseOtherTerminals: (fileId: string) => void;
@@ -80,6 +86,7 @@ export function ProjectTerminalDock({
   onSizePaint,
   onSizeCommit,
   onAddTerminal,
+  onAddProfileTerminal,
   onSelectTerminal,
   onCloseTerminal,
   onCloseOtherTerminals,
@@ -90,6 +97,11 @@ export function ProjectTerminalDock({
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const sideButton = useRef<HTMLDivElement>(null);
+  const profileButton = useRef<HTMLDivElement>(null);
+  const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const profiles = useTerminalProfiles(!!onAddProfileTerminal);
   const drag = useRef<{ start: number; size: number } | null>(null);
   const sizeRef = useRef(dock.size);
   sizeRef.current = dock.size;
@@ -224,6 +236,20 @@ export function ProjectTerminalDock({
             >
               <Plus className="size-3.5" strokeWidth={1.75} />
             </IconButton>
+            {onAddProfileTerminal && profiles.length > 0 ? (
+              <div ref={profileButton}>
+                <IconButton
+                  label="New Agent CLI"
+                  onClick={() => {
+                    const rect = profileButton.current?.getBoundingClientRect();
+                    if (!rect) return;
+                    setProfileMenu({ x: rect.left, y: rect.bottom + 4 });
+                  }}
+                >
+                  <ChevronDown className="size-3.5" strokeWidth={1.75} />
+                </IconButton>
+              </div>
+            ) : null}
             <div ref={sideButton}>
             <IconButton
               label="Move Terminal"
@@ -284,6 +310,24 @@ export function ProjectTerminalDock({
             setMenu(null);
           }}
           onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {profileMenu ? (
+        <ExplorerMenu
+          x={profileMenu.x}
+          y={profileMenu.y}
+          ariaLabel="New agent CLI"
+          items={profiles.map((profile) => ({
+            kind: "item" as const,
+            id: profile.id,
+            label: `New ${profile.label}`,
+          }))}
+          onPick={(id) => {
+            setProfileMenu(null);
+            const profile = asTerminalProfileId(id);
+            if (profile) onAddProfileTerminal?.(profile);
+          }}
+          onClose={() => setProfileMenu(null)}
         />
       ) : null}
     </section>

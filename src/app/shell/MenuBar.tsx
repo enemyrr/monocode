@@ -14,12 +14,18 @@ import {
   subscribeAutosave,
   subscribeKeybindings,
 } from "../../features/settings/model/settings";
+import {
+  asTerminalProfileId,
+  type TerminalProfileId,
+} from "../../features/terminal/model/terminal-profiles";
+import { useTerminalProfiles } from "../../features/terminal/ui/use-terminal-profiles";
 
 type MenuKey = "file" | "view" | "terminal";
 
 type Props = {
   onNew: () => void;
   onNewTerminal?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onToggleTerminal?: () => void;
   onGoToFile?: () => void;
   onToggleSidebar: () => void;
@@ -41,6 +47,7 @@ type Props = {
 export function MenuBar({
   onNew,
   onNewTerminal,
+  onNewProfileTerminal,
   onToggleTerminal,
   onGoToFile,
   onToggleSidebar,
@@ -60,6 +67,7 @@ export function MenuBar({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<MenuKey | null>(null);
+  const profiles = useTerminalProfiles(activeMenu === "terminal" && !!onNewProfileTerminal);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -136,6 +144,11 @@ export function MenuBar({
     (id: string) => {
       closeMenu();
       setOpen(false);
+      const profile = asTerminalProfileId(id.replace(/^new_terminal_/, ""));
+      if (profile) {
+        onNewProfileTerminal?.(profile);
+        return;
+      }
 
       switch (id) {
         case "new_tab":
@@ -218,6 +231,7 @@ export function MenuBar({
       onGoToFile,
       onNew,
       onNewTerminal,
+      onNewProfileTerminal,
       onToggleTerminal,
       onPickProject,
       onSearch,
@@ -374,6 +388,13 @@ export function MenuBar({
             label: "New Terminal",
             shortcut: shortcut("Terminal: New", `${MOD}\``),
           },
+          ...(onNewProfileTerminal
+            ? profiles.map((profile) => ({
+                kind: "item" as const,
+                id: `new_terminal_${profile.id}`,
+                label: `New ${profile.label}`,
+              }))
+            : []),
           {
             kind: "item",
             id: "toggle_terminal",

@@ -271,6 +271,10 @@ import {
   type TerminalMetaPatch,
 } from "../features/terminal/model/terminalTab";
 import {
+  asTerminalProfileId,
+  type TerminalProfileId,
+} from "../features/terminal/model/terminal-profiles";
+import {
   applyHarnessEvent,
   applyHarnessEvents,
   appendUser,
@@ -2915,7 +2919,7 @@ function Workspace({
   }, []);
 
   const openProjectTerminal = useCallback(
-    (cwd: string) => {
+    (cwd: string, profile?: TerminalProfileId) => {
       const workdir = cwd || projectCwdRef.current;
       const projectPath = projectCwdRef.current;
       if (!isLocalProject(projectPath)) return false;
@@ -2925,6 +2929,7 @@ function Workspace({
           workdir,
           existing ? nextDockTerminalTitle(existing, workdir) : undefined,
           projectPath,
+          profile,
         );
         if (!existing) {
           return [
@@ -2947,14 +2952,19 @@ function Workspace({
   );
 
   const onOpenTerminal = useCallback(
-    (cwd: string, asWorkspaceTab = false, occupySessionId?: string) => {
+    (
+      cwd: string,
+      asWorkspaceTab = false,
+      occupySessionId?: string,
+      profile?: TerminalProfileId,
+    ) => {
       const workdir = cwd || terminalCwd;
       if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir))
         return;
-      if (openProjectTerminal(workdir)) return;
+      if (openProjectTerminal(workdir, profile)) return;
 
       if (asWorkspaceTab || !activeTab) {
-        const file = newTerminalFile(workdir, undefined, sidebarCwd);
+        const file = newTerminalFile(workdir, undefined, sidebarCwd, profile);
         const tab = newTerminalWorkspaceTab(file);
         appendTab(tab, sidebarCwd);
         setActiveTabId(tab.id);
@@ -2979,6 +2989,7 @@ function Workspace({
         workdir,
         nextTerminalTitle(activeTab, workdir),
         sidebarCwd,
+        profile,
       );
       setTabs((prev) =>
         prev.map((tab) =>
@@ -2995,6 +3006,12 @@ function Workspace({
   const onNewTerminal = useCallback(() => {
     onOpenTerminal(terminalCwd);
   }, [terminalCwd, onOpenTerminal]);
+
+  const onNewProfileTerminal = useCallback(
+    (profile: TerminalProfileId) =>
+      onOpenTerminal(terminalCwd, false, undefined, profile),
+    [terminalCwd, onOpenTerminal],
+  );
 
   const onShowProjectTerminal = useCallback(() => {
     leaveCoveringMono();
@@ -3020,7 +3037,7 @@ function Workspace({
   ]);
 
   const onNewTerminalInSession = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, profile?: TerminalProfileId) => {
       const session = sessionsRef.current.find(
         (entry) => entry.id === sessionId,
       );
@@ -3029,6 +3046,7 @@ function Workspace({
         session ? sessionWorkCwd(session) : projectCwd,
         false,
         sessionId,
+        profile,
       );
     },
     [onOpenTerminal, projectCwd],
@@ -11933,6 +11951,7 @@ function Workspace({
     onOpenNotes,
     pickProject,
     onNewTerminal,
+    onNewProfileTerminal,
     onNewTerminalTab,
     onToggleProjectTerminal,
     onNavigateSessionList,
@@ -11965,6 +11984,7 @@ function Workspace({
     onOpenNotes,
     pickProject,
     onNewTerminal,
+    onNewProfileTerminal,
     onNewTerminalTab,
     onToggleProjectTerminal,
     onNavigateSessionList,
@@ -12224,6 +12244,13 @@ function Workspace({
       listen("new_terminal_tab", () =>
         run("new-terminal-tab", actions.current.onNewTerminalTab),
       ),
+      listen<string>("new_terminal_profile", ({ payload }) => {
+        const profile = asTerminalProfileId(payload);
+        if (profile)
+          run(`new-terminal-${profile}`, () =>
+            actions.current.onNewProfileTerminal(profile),
+          );
+      }),
       listen("toggle_terminal", () =>
         run("toggle-terminal", actions.current.onToggleProjectTerminal),
       ),
@@ -12793,6 +12820,7 @@ function Workspace({
       onToggleSessionSidebar={onToggleSessionSidebar}
       onSelect={activateTab}
       onNewTerminal={onNewTerminal}
+      onNewProfileTerminal={onNewProfileTerminal}
       onOpenSettings={onOpenSettings}
       onOpenInbox={onOpenInbox}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
@@ -12965,6 +12993,7 @@ function Workspace({
                   <MenuBar
                     onNew={onNew}
                     onNewTerminal={onNewTerminal}
+                    onNewProfileTerminal={onNewProfileTerminal}
                     onToggleTerminal={onToggleProjectTerminal}
                     onGoToFile={onGoToFile}
                     onToggleSidebar={onToggleSidebar}
@@ -13028,6 +13057,7 @@ function Workspace({
                                 onSizePaint={paintDockSize}
                                 onSizeCommit={commitDockSize}
                                 onAddTerminal={onNewTerminal}
+                                onAddProfileTerminal={onNewProfileTerminal}
                                 onSelectTerminal={onSelectProjectTerminal}
                                 onCloseTerminal={onCloseProjectTerminal}
                                 onCloseOtherTerminals={
