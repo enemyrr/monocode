@@ -13,6 +13,9 @@ import {
 import { Composer } from "./Composer";
 import { useGitActions } from "../../source-control/hooks/use-git-actions";
 import { MergePrDialog } from "../../source-control/ui/merge-pr-dialog";
+import { useSessionPr } from "../../source-control/hooks/use-session-pr";
+import { prStripState } from "../../source-control/model/pr-strip-state";
+import { SessionPrStrip } from "../../source-control/ui/session-pr-strip";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -641,13 +644,34 @@ const LocalSessionPane = memo(function LocalSessionPane({
     !!draftBlock;
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   const gitActionsEnabled =
-    !remote && !agent && !managed && !session.inboxAsk && looksLikeProject(session.cwd);
+    !remote &&
+    !agent &&
+    !managed &&
+    !session.inboxAsk &&
+    looksLikeProject(session.cwd);
   const gitActions = useGitActions({
     cwd: workCwd,
     branch: session.branch,
     submit: ({ text, instructions }) =>
       onSubmit(session.id, text, [], { instructions }),
   });
+  const sessionPr = useSessionPr({
+    cwd: workCwd,
+    branch: session.branch,
+    enabled: gitActionsEnabled && visible && !isEmpty,
+    busy: !!session.busy,
+  });
+  const prData = sessionPr.data;
+  const prStrip = prData
+    ? prStripState({
+        pr: prData.pr,
+        branch: prData.index.branch,
+        defaultBranch: prData.index.defaultBranch,
+        hasRemote: !!prData.index.remote,
+        hasWork:
+          prData.index.aheadOfDefault > 0 || prData.index.files.length > 0,
+      })
+    : null;
   // The agent's input always sits at the bottom, like a chat.
   const dockComposer =
     remoteSessionLoading ||
@@ -1260,7 +1284,26 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   />
                 </>
               ) : (
-                composer
+                <>
+                  {prData && prStrip && gitActionsEnabled ? (
+                    <SessionPrStrip
+                      pr={prData.pr}
+                      branch={prData.index.branch}
+                      state={prStrip}
+                      onAction={(action) =>
+                        gitActions.run(
+                          action === "pr"
+                            ? { action, draft: false, note: "" }
+                            : action === "merge"
+                              ? { action }
+                              : { action, note: "" },
+                          prData.pr,
+                        )
+                      }
+                    />
+                  ) : null}
+                  {composer}
+                </>
               )}
             </div>
           ) : null}
@@ -1281,7 +1324,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <MergePrDialog
               cwd={workCwd}
               initialMethod={gitActions.merge.method}
-              onClose={gitActions.closeMerge}
+              onClose={() => {
+                gitActions.closeMerge();
+                void sessionPr.refresh(true);
+              }}
             />
           ) : null}
         </div>
