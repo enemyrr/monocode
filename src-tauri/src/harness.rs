@@ -2945,8 +2945,27 @@ fn apply_gui_path(cmd: &mut Command) {
     cmd.env("PATH", gui_search_path());
 }
 
+/// Session markers a parent Claude Code leaves in the environment when it
+/// launches MonoCode. A `claude` that MonoCode starts would inherit them and run
+/// as a child session with transcript saving off.
+pub(crate) const AGENT_SESSION_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 pub(crate) fn apply_gui_env(cmd: &mut Command) {
     apply_gui_path(cmd);
+    for var in AGENT_SESSION_VARS {
+        cmd.env_remove(var);
+    }
     crate::hide_window_console(cmd);
     if let Some(id) = passwd_identity() {
         if std::env::var_os("HOME").is_none() {

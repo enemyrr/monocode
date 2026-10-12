@@ -97,6 +97,9 @@ pub fn shell_run_start(
         .env("TERM", "dumb")
         .env("PAGER", "cat")
         .env("GIT_PAGER", "cat");
+    for var in crate::harness::AGENT_SESSION_VARS {
+        cmd.env_remove(var);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
