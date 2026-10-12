@@ -257,6 +257,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "editor open top workspace normal session pane beside chat",
   },
   {
+    id: "new-tab",
+    section: "general",
+    label: "New tab opens",
+    keywords: "default terminal shell claude code codex opencode cli chat cmd-t",
+  },
+  {
     id: "tab-animations",
     section: "general",
     label: "Tab animations",
@@ -1188,7 +1194,7 @@ export const KEYBINDINGS: KeybindingRow[] = [
   { command: "Pane: Focus Up", keys: `${MOD}${ALT}↑`, when: "Always" },
   { command: "Pane: Focus Down", keys: `${MOD}${ALT}↓`, when: "Always" },
   { command: "Terminal: New", keys: `${MOD}\``, when: "Always" },
-  { command: "Terminal: New Tab", keys: `${MOD}${SHIFT}\``, when: "Always" },
+  { command: "Terminal: New Tab", keys: `${MOD}${SHIFT}T`, when: "Always" },
   { command: "Terminal: Toggle Dock", keys: `${MOD}J`, when: "Always" },
   { command: "Editor: Find", keys: `${MOD}F`, when: "editorFocus" },
   { command: "Editor: Replace", keys: `${MOD}${ALT}F`, when: "editorFocus" },

@@ -17,6 +17,7 @@ import {
   newSessionChangesTab,
   newTab,
   newTerminalFile,
+  newTerminalWorkspaceTab,
   splitPane,
 } from "./layout";
 import { createProjectTerminal } from "../../projects/model/projectTerminal";
@@ -674,6 +675,37 @@ describe("hydrateWorkspaceSnapshot", () => {
     );
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     expect(workspace?.tabs[0]?.terminalPanes[0]?.files[0]?.terminal).toBe(true);
+  });
+
+  it("restores a CLI profile terminal opened as a workspace tab", () => {
+    const tab = newTerminalWorkspaceTab(
+      newTerminalFile("/tmp/a/wt", undefined, "/tmp/a", "codex"),
+    );
+    const snapshot = parseWorkspaceSnapshot(
+      JSON.parse(
+        JSON.stringify(
+          collectWorkspaceSnapshot([tab], [], tab.id, "/tmp/a", new Map()),
+        ),
+      ),
+    );
+    const workspace = snapshot && hydrateWorkspaceSnapshot(snapshot, new Map());
+    expect(workspace?.activeTabId).toBe(tab.id);
+    expect(workspace?.tabs[0]).toMatchObject({
+      focusedId: tab.focusedId,
+      terminalPanes: [
+        {
+          files: [
+            {
+              path: "Codex",
+              cwd: "/tmp/a/wt",
+              projectCwd: "/tmp/a",
+              terminal: true,
+              profile: "codex",
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("keeps a terminal's CLI profile and drops an unknown one", () => {

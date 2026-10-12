@@ -76,6 +76,14 @@ describe("tabCommand", () => {
     ).toBe("new-terminal-tab");
   });
 
+  it("opens a terminal workspace tab with shift-cmd-t on any layout", () => {
+    expect(
+      tabCommand(
+        key({ key: "T", code: "KeyT", metaKey: true, shiftKey: true }),
+      ),
+    ).toBe("new-terminal-tab");
+  });
+
   it("closes all tabs with Cmd+Shift+W or Ctrl+Shift+W", () => {
     expect(tabCommand(key({ key: "W", metaKey: true, shiftKey: true }))).toBe(
       "close-all",
