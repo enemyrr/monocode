@@ -46,6 +46,7 @@ mod remote;
 mod remote_ssh;
 mod search;
 mod session_store;
+mod shell_run;
 mod skills;
 pub mod ssh_askpass;
 #[cfg(target_os = "macos")]
@@ -258,6 +259,7 @@ pub fn run() {
         })
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
+        .manage(shell_run::ShellRuns::default())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .setup(|app| {
@@ -498,6 +500,8 @@ pub fn run() {
             pty::pty_status,
             pty::pty_kill,
             pty::pty_kill_all,
+            shell_run::shell_run_start,
+            shell_run::shell_run_cancel,
             session_store::session_upsert,
             session_store::session_list_by_project,
             session_store::session_rebase_project,
@@ -684,6 +688,9 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
+    }
+    if let Some(runs) = handle.try_state::<shell_run::ShellRuns>() {
+        runs.kill_all();
     }
 }
 
