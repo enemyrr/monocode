@@ -174,6 +174,7 @@ type Shared = {
   onBtwRetry?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwDelete?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwStop?: (sessionId: string, turn: Block[], threadId: string) => void;
+  onShellRunBlock?: (sessionId: string, block: Block) => void;
   onBtwModelChange?: (
     sessionId: string,
     turn: Block[],
@@ -270,6 +271,7 @@ function PaneTreeComponent({
   onBtwRetry,
   onBtwDelete,
   onBtwStop,
+  onShellRunBlock,
   onBtwModelChange,
   onHandoff,
   onMovePane,
@@ -562,6 +564,7 @@ function PaneTreeComponent({
                   onBtwRetry={onBtwRetry}
                   onBtwDelete={onBtwDelete}
                   onBtwStop={onBtwStop}
+                  onShellRunBlock={onShellRunBlock}
                   onBtwModelChange={onBtwModelChange}
                   onNewTerminal={onNewTerminal}
                   onPaneDragStart={onPaneDragStart}
