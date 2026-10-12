@@ -390,6 +390,8 @@ export type Block = {
    * rather than turn chrome like a status ping. Never folds into the trail.
    */
   notice?: "error" | "interrupt";
+  /** A `!<command>` the user ran; system blocks only. */
+  shellRun?: import("./shell-command").ShellRunMeta;
   statusKey?: string;
   /** Posted to a Mono's chat by one of its habits, outside any turn. */
   monoHabit?: { id: string; name: string; at: number };

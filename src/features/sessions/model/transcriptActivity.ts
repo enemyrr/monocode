@@ -148,7 +148,7 @@ function isStatusStep(block: Block): boolean {
 export function isActivityBlock(block: Block): boolean {
   if (isThinkingBlock(block)) return true;
   if (block.role === "system") {
-    return !block.interjection && !isNoticeBlock(block);
+    return !block.interjection && !block.shellRun && !isNoticeBlock(block);
   }
   if (block.role !== "tool" && block.role !== "approval") return false;
   if (
@@ -349,7 +349,11 @@ function groupTranscriptTurns(
       }
       continue;
     }
-    if (block.role === "handoff" || block.monoHabit) {
+    if (
+      block.role === "handoff" ||
+      block.monoHabit ||
+      (block.shellRun && !block.shellRun.inTurn)
+    ) {
       if (current.length > 0) turns.push(current);
       turns.push([block]);
       current = [];

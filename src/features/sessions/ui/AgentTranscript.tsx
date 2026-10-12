@@ -82,6 +82,7 @@ import { resolveModel } from "../model/models";
 import { harnessForTurn } from "../model/secondOpinion";
 import { TranscriptTurnCache } from "../model/transcriptTurnCache";
 import { Shimmer } from "../../../shared/ui/Shimmer";
+import { ShellRunRow, ShellRunSendContext } from "./shell-run-row";
 import {
   hasPendingApproval,
   HARNESS_TITLE,
@@ -229,6 +230,8 @@ type Props = {
   backgroundTasks?: string[];
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onAddToChat?: (text: string) => void;
+  /** Puts a finished `!<command>` run's result in the composer. */
+  onSendShellRun?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
@@ -728,7 +731,11 @@ function AgentTranscriptComponent({
   // A scheduled update can land while the chat's own turn is still running.
   const activeTurnIndex = turns.reduce(
     (latest, turn, index) =>
-      turn[0].monoHabit || turn[0].role === "handoff" ? latest : index,
+      turn[0].monoHabit ||
+      turn[0].role === "handoff" ||
+      (turn[0].shellRun && !turn[0].shellRun.inTurn)
+        ? latest
+        : index,
     -1,
   );
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount);
@@ -1686,7 +1693,13 @@ function TranscriptContent({
 
 // Keep hidden panes' local state, and catch up with current props on activation.
 export const AgentTranscript = memo(
-  AgentTranscriptComponent,
+  function AgentTranscript(props: Props) {
+    return (
+      <ShellRunSendContext.Provider value={props.onSendShellRun}>
+        <AgentTranscriptComponent {...props} />
+      </ShellRunSendContext.Provider>
+    );
+  },
   (previous, next) => previous.visible === false && next.visible === false,
 );
 
@@ -2336,6 +2349,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
   if (block.role === "system") {
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
+    }
+    if (block.shellRun) {
+      return <ShellRunRow run={block.shellRun} embedded={embedded} />;
     }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>

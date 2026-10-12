@@ -1599,7 +1599,7 @@ fn is_text_file_busy(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(libc::ETXTBSY)
 }
 
-fn terminate(pid: u32) {
+pub(crate) fn terminate(pid: u32) {
     terminate_after(pid, KILL_ESCALATE);
 }
 

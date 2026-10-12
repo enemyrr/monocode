@@ -55,6 +55,7 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { runShellCommand } from "../model/shell-run-store";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -260,6 +261,7 @@ export type SessionPaneProps = {
   onBtwRetry?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwDelete?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwStop?: (sessionId: string, turn: Block[], threadId: string) => void;
+  onShellRunBlock?: (sessionId: string, block: Block) => void;
   onBtwModelChange?: (
     sessionId: string,
     turn: Block[],
@@ -374,6 +376,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onBtwStop,
   onBtwModelChange,
   onNewTerminal,
+  onShellRunBlock,
   onPaneDragStart,
   transcriptPool,
 }: Props) {
@@ -591,6 +594,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
     },
     [],
   );
+  const sendShellRunToAgent = useCallback(
+    (text: string) => addSelectionToChat(text, "plain"),
+    [addSelectionToChat],
+  );
   const acknowledgeQuote = useCallback((handledId: number) => {
     setQuoteRequest((current) => acknowledgeQuoteRequest(current, handledId));
   }, []);
@@ -786,6 +793,27 @@ const LocalSessionPane = memo(function LocalSessionPane({
         return onSubmit(session.id, text, attachments, options);
       }}
       onBtwCommand={btw.openWith}
+      shellCommand={
+        agent || managed || session.inboxAsk || session.worktreeRemoved
+          ? undefined
+          : {
+              cwd: workCwd,
+              unavailable: remote
+                ? "Shell commands don't run on remote projects yet"
+                : isEmpty
+                  ? "Send a first message before running shell commands"
+                  : undefined,
+              onRun: (command) => {
+                if (!onShellRunBlock) return false;
+                runShellCommand({
+                  command,
+                  cwd: workCwd,
+                  inTurn: !!session.busy,
+                  onUpdate: (block) => onShellRunBlock(session.id, block),
+                });
+              },
+            }
+      }
       onStop={() => onStop(session.id)}
       onCompactContext={() => onCompactContext(session.id)}
       onGitAction={gitActionsEnabled ? gitActions.run : undefined}
@@ -1037,6 +1065,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     backgroundTasks={session.backgroundTasks}
                     onApproval={session.worktreeRemoved ? undefined : approve}
                     onAddToChat={addSelectionToChat}
+                    onSendShellRun={sendShellRunToAgent}
                     onSaveNote={notesEnabled ? saveNote : undefined}
                     onSendDraft={
                       draftBlock

@@ -19,6 +19,7 @@ import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { updateSessionState } from "./model/sessionState";
+import { upsertShellRunBlock } from "../features/sessions/model/shell-command";
 import {
   handleAgentApp,
   canAccessAgentAppProject,
@@ -2829,6 +2830,14 @@ function Workspace({
     window.addEventListener(ADD_NOTE_TO_CHAT_EVENT, onAdd);
     return () => window.removeEventListener(ADD_NOTE_TO_CHAT_EVENT, onAdd);
   }, [onAddNoteToChat]);
+
+  const onShellRunBlock = useCallback((sessionId: string, block: Block) => {
+    updateSessionState(sessionsRef, setSessions, (sessions) =>
+      sessions.map((session) =>
+        session.id === sessionId ? upsertShellRunBlock(session, block) : session,
+      ),
+    );
+  }, []);
 
   const onInboxCardDismiss = useCallback((sessionId: string) => {
     setSessions((prev) =>
@@ -12491,6 +12500,7 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
+    onShellRunBlock,
   };
 
   // Renames, mascot picks and new projects show up on the rail.
