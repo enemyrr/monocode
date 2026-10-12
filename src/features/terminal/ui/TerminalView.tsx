@@ -1,5 +1,5 @@
 import { Terminal } from "@xterm/xterm";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getPtyStatus,
   killPty,
@@ -26,12 +26,20 @@ import {
   type TerminalFitMode,
 } from "../model/terminalLayout";
 import { IS_MAC } from "../../../platform/tauri/platform";
+import {
+  terminalLaunch,
+  terminalProfile,
+  type TerminalProfileId,
+} from "../model/terminal-profiles";
+import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { RotateCcw } from "../../../shared/ui/icons";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = {
   id: string;
   cwd: string;
   active: boolean;
+  profile?: TerminalProfileId;
   onMetaChange?: (patch: TerminalMetaPatch) => void;
 };
 
@@ -145,7 +153,13 @@ function oscColors() {
   };
 }
 
-export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
+export function TerminalView({
+  id,
+  cwd,
+  active,
+  profile,
+  onMetaChange,
+}: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -154,6 +168,8 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
   const onMetaChangeRef = useRef(onMetaChange);
   onMetaChangeRef.current = onMetaChange;
   const runningProcessRef = useRef<string | null>(null);
+  const [run, setRun] = useState(0);
+  const [exit, setExit] = useState<{ code: number | null } | null>(null);
 
   useEffect(() => {
     const outer = outerRef.current;
@@ -252,10 +268,11 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
           if (closed) return;
           const status = code == null ? "" : ` (${code})`;
           term.writeln(`\r\n[process exited${status}]`);
+          if (profile) setExit({ code });
         },
       );
       didStart = true;
-      return spawnPty(id, cwd, term.cols, term.rows);
+      return spawnPty(id, cwd, term.cols, term.rows, terminalLaunch(profile));
     };
 
     const starting = (stoppingPtys.get(id) ?? Promise.resolve())
@@ -392,7 +409,7 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
       termRef.current = null;
       spawned.current = false;
     };
-  }, [id]);
+  }, [id, profile, run]);
 
   // Identity-stable: the callers pass an inline arrow, so depending on the
   // prop itself would tear down and re-arm the poll — and re-fork `ps` — on
@@ -439,7 +456,7 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
     if (!active) return;
     applySizeRef.current();
     termRef.current?.focus();
-  }, [active]);
+  }, [active, run]);
 
   return (
     <div
@@ -451,6 +468,23 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
         ref={hostRef}
         className="monocode-terminal-host min-h-0 min-w-0 flex-1 overflow-hidden"
       />
+      {profile && exit ? (
+        <div className="flex shrink-0 items-center gap-3 border-t border-stroke px-3 py-1.5 text-[12px] text-content/60">
+          <span className="min-w-0 flex-1 truncate">
+            {terminalProfile(profile).label} exited
+            {exit.code == null ? "" : ` with code ${exit.code}`}
+          </span>
+          <SecondaryButton
+            onClick={() => {
+              setExit(null);
+              setRun((value) => value + 1);
+            }}
+          >
+            <RotateCcw className="size-3" strokeWidth={1.75} />
+            Restart
+          </SecondaryButton>
+        </div>
+      ) : null}
     </div>
   );
 }

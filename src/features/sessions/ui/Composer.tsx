@@ -1,3 +1,4 @@
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
 import {
   ArrowUp,
   AiIdea,
@@ -261,6 +262,7 @@ type Props = {
   worktreeRemoved?: boolean;
   onManageWorktrees?: () => void;
   onNewTerminal?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onModelChange: (harness: HarnessId, model: string) => void;
   onModelSettingsChange?: (settings: Record<string, string>) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -386,6 +388,7 @@ export function Composer({
   worktreeRemoved = false,
   onManageWorktrees,
   onNewTerminal,
+  onNewProfileTerminal,
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
@@ -1964,6 +1967,9 @@ export function Composer({
                   enabled={enabled}
                   onCwdChange={onCwdChange}
                   onNewTerminal={worktreeRemoved ? undefined : onNewTerminal}
+                  onNewProfileTerminal={
+                    worktreeRemoved ? undefined : onNewProfileTerminal
+                  }
                   onClose={() => ref.current?.focus()}
                 />
               ) : null}

@@ -1,3 +1,4 @@
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
 import {
   memo,
   useCallback,
@@ -186,7 +187,7 @@ type Shared = {
     targetTabId: string,
     position: TitleTabDropPosition,
   ) => void;
-  onNewTerminal: (sessionId: string) => void;
+  onNewTerminal: (sessionId: string, profile?: TerminalProfileId) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
 };

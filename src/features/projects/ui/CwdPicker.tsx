@@ -20,6 +20,9 @@ import { LAYER } from "../../../shared/lib/layers";
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectLogoIcon } from "./ProjectLogoIcon";
 import { MOD } from "../../../platform/tauri/platform";
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
+import { useTerminalProfiles } from "../../terminal/ui/use-terminal-profiles";
+import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 
 type Props = {
   cwd: string;
@@ -39,6 +42,7 @@ type Props = {
   children?: ReactNode;
   onCwdChange: (path: string) => void;
   onNewTerminal?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onClose?: () => void;
 };
 
@@ -54,7 +58,8 @@ const SELF = "[data-cwd-picker],[data-cwd-submenu]";
 type Row =
   | { kind: "recent"; path: string }
   | { kind: "more" }
-  | { kind: "new-terminal" };
+  | { kind: "new-terminal" }
+  | { kind: "new-profile"; profile: TerminalProfileId; label: string };
 
 export function CwdPicker({
   cwd,
@@ -71,6 +76,7 @@ export function CwdPicker({
   children,
   onCwdChange,
   onNewTerminal,
+  onNewProfileTerminal,
   onClose,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -96,6 +102,7 @@ export function CwdPicker({
     mode === "move" ? otherRecents : otherRecents.slice(0, PREVIEW);
   const overflowRecents = mode === "move" ? [] : otherRecents.slice(PREVIEW);
   const hasMore = overflowRecents.length > 0;
+  const profiles = useTerminalProfiles(open && !!onNewProfileTerminal);
 
   useEffect(() => {
     if (mode === "move") activeRef.current?.scrollIntoView({ block: "nearest" });
@@ -108,8 +115,15 @@ export function CwdPicker({
     }));
     if (hasMore) out.push({ kind: "more" });
     if (onNewTerminal) out.push({ kind: "new-terminal" });
+    if (onNewProfileTerminal) {
+      for (const profile of profiles) {
+        out.push({ kind: "new-profile", profile: profile.id, label: profile.label });
+      }
+    }
     return out;
-  }, [hasMore, onNewTerminal, previewRecents]);
+  }, [hasMore, onNewTerminal, onNewProfileTerminal, previewRecents, profiles]);
+  const footerStart = previewRecents.length + (hasMore ? 1 : 0);
+  const footerRows = rows.slice(footerStart);
 
   const dismiss = (restore = false) => {
     setOpen(false);
@@ -144,6 +158,10 @@ export function CwdPicker({
     dismiss(true);
     if (row.kind === "new-terminal") {
       onNewTerminal?.();
+      return;
+    }
+    if (row.kind === "new-profile") {
+      onNewProfileTerminal?.(row.profile);
       return;
     }
     onCwdChange(row.path);
@@ -192,9 +210,6 @@ export function CwdPicker({
     }
   };
 
-  const newTerminalIndex = onNewTerminal
-    ? previewRecents.length + (hasMore ? 1 : 0)
-    : -1;
   const moreIndex = hasMore ? previewRecents.length : -1;
 
   return (
@@ -347,28 +362,46 @@ export function CwdPicker({
               </button>
             ) : null}
           </div>
-          {onNewTerminal ? (
+          {footerRows.length > 0 ? (
             <div className="shrink-0 border-t border-stroke py-1">
-              <button
-                type="button"
-                role="menuitem"
-                onMouseDown={(e) => e.stopPropagation()}
-                onMouseEnter={() => {
-                  setMoreOpen(false);
-                  setActive(newTerminalIndex);
-                }}
-                onClick={() => pick({ kind: "new-terminal" })}
-                className={`flex w-full items-center justify-between gap-3 px-2.5 py-2 text-left ${
-                  active === newTerminalIndex
-                    ? "bg-selection text-content"
-                    : "text-content/80 hover:bg-content/5"
-                }`}
-              >
-                <span className="text-[13px]">New terminal</span>
-                <span className="shrink-0 font-mono text-[11px] text-content/45">
-                  {MOD}`
-                </span>
-              </button>
+              {footerRows.map((row, offset) => {
+                const index = footerStart + offset;
+                return (
+                  <button
+                    key={row.kind === "new-profile" ? row.profile : row.kind}
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onMouseEnter={() => {
+                      setMoreOpen(false);
+                      setActive(index);
+                    }}
+                    onClick={() => pick(row)}
+                    className={`flex w-full items-center gap-2 px-2.5 py-2 text-left ${
+                      active === index
+                        ? "bg-selection text-content"
+                        : "text-content/80 hover:bg-content/5"
+                    }`}
+                  >
+                    {row.kind === "new-profile" ? (
+                      <HarnessIcon
+                        harness={row.profile}
+                        className="size-3.5 shrink-0"
+                      />
+                    ) : null}
+                    <span className="flex-1 text-[13px]">
+                      {row.kind === "new-profile"
+                        ? `New ${row.label}`
+                        : "New terminal"}
+                    </span>
+                    {row.kind === "new-terminal" ? (
+                      <span className="shrink-0 font-mono text-[11px] text-content/45">
+                        {MOD}`
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
           ) : null}
         </Popover>

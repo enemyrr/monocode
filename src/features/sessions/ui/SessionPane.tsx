@@ -1,3 +1,4 @@
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
 import { GripVertical, X } from "../../../shared/ui/icons";
 import {
   memo,
@@ -266,7 +267,7 @@ export type SessionPaneProps = {
     model: string,
     modelSettings: Record<string, string>,
   ) => void;
-  onNewTerminal: (sessionId: string) => void;
+  onNewTerminal: (sessionId: string, profile?: TerminalProfileId) => void;
 
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
@@ -752,6 +753,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       worktreeRemoved={session.worktreeRemoved}
       onManageWorktrees={onManageWorktrees}
       onNewTerminal={() => onNewTerminal(session.id)}
+      onNewProfileTerminal={(profile) => onNewTerminal(session.id, profile)}
       onModelChange={(harness, model) => {
         onModelChange(session.id, harness, model);
         const selected = resolveModel(harness, model);

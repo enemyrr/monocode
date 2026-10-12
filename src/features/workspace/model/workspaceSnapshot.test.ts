@@ -676,6 +676,36 @@ describe("hydrateWorkspaceSnapshot", () => {
     expect(workspace?.tabs[0]?.terminalPanes[0]?.files[0]?.terminal).toBe(true);
   });
 
+  it("keeps a terminal's CLI profile and drops an unknown one", () => {
+    const claude = newTerminalFile("/tmp/a", undefined, undefined, "claude");
+    const raw = JSON.parse(
+      JSON.stringify(
+        collectWorkspaceSnapshot(
+          [{ ...newTab("s1"), id: "t1" }],
+          [],
+          "t1",
+          "/tmp/a",
+          new Map(),
+          [createProjectTerminal("/tmp/a", claude)],
+        ),
+      ),
+    );
+    raw.projectTerminals[0].pane.files.push({
+      ...newTerminalFile("/tmp/a"),
+      profile: "vim",
+    });
+    const snapshot = parseWorkspaceSnapshot(raw);
+    const workspace = snapshot && hydrateWorkspaceSnapshot(snapshot, new Map());
+    const [first, second] = workspace?.projectTerminals?.[0]?.pane.files ?? [];
+    expect(first).toMatchObject({
+      path: "Claude Code",
+      terminal: true,
+      profile: "claude",
+    });
+    expect(second?.terminal).toBe(true);
+    expect(second?.profile).toBeUndefined();
+  });
+
   it("restores a project terminal dock", () => {
     const term = { ...newTerminalFile("/tmp/a"), foreground: "vite" };
     const dock = {
