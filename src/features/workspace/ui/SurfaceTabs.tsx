@@ -369,7 +369,12 @@ export function SurfaceTabs({
                     : "text-content/50 hover:bg-content/5 hover:text-content"
                 }`}
               >
-                {terminal ? (
+                {terminal && file.profile ? (
+                  <HarnessIcon
+                    harness={file.profile}
+                    className="size-3.5 shrink-0"
+                  />
+                ) : terminal ? (
                   <Terminal className="size-3.5 shrink-0" strokeWidth={1.75} />
                 ) : agent ? (
                   <HarnessIcon

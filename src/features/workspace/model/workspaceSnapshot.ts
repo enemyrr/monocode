@@ -31,6 +31,7 @@ import {
   type ProjectReturnMemory,
 } from "../../projects/model/projectReturn";
 import type { InboxAskContext } from "../../inbox/model/inboxAsk";
+import { asTerminalProfileId } from "../../terminal/model/terminal-profiles";
 import {
   HARNESSES,
   RUNTIME_MODES,
@@ -560,6 +561,7 @@ function sanitizeFile(raw: unknown): FilePaneTab | null {
   if (typeof value.path !== "string" || !value.path) return null;
   if (typeof value.cwd !== "string" || !value.cwd) return null;
   const plan = sanitizePlan(value.plan);
+  const profile = asTerminalProfileId(value.profile);
   const hasReleaseNotes = "releaseNotes" in value;
   const releaseNotes = sanitizeReleaseNotes(value.releaseNotes);
   const hasCommit = "commit" in value;
@@ -634,6 +636,7 @@ function sanitizeFile(raw: unknown): FilePaneTab | null {
       ? { changeKind: value.changeKind }
       : {}),
     ...(value.terminal === true ? { terminal: true } : {}),
+    ...(value.terminal === true && profile ? { profile } : {}),
     ...(value.preview === true ? { preview: true } : {}),
   };
 }
