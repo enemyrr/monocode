@@ -285,6 +285,9 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
           : {}),
         text: message.text,
         attachments,
+        ...(typeof message.instructions === "string" && message.instructions
+          ? { instructions: message.instructions }
+          : {}),
         ...(noteCard ? { noteCard } : {}),
         ...(handoffCard ? { handoffCard } : {}),
         ...(completion ? { monoSessionCompletion: completion } : {}),

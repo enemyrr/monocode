@@ -95,6 +95,8 @@ export type ComposerTurnOptions = {
   onResendRejected?: (recovery: EditedResendRejection) => void;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** Sent to the agent in place of the visible text, shown collapsed under it. */
+  instructions?: string;
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";
@@ -275,6 +277,7 @@ export type QueuedMessage = {
   blockId?: string;
   text: string;
   attachments: Attachment[];
+  instructions?: string;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
   intent?: TurnIntent;
@@ -378,7 +381,7 @@ export type Block = {
   noteCard?: NoteCardMeta;
   /** Saved artifacts attached to this turn; their bodies live outside chat. */
   artifactCards?: import("../../artifacts/artifacts").ArtifactCard[];
-  /** Exact CI repair instructions and evidence supplied with this user turn. */
+  /** Exact instructions sent with this user turn, such as CI repair evidence. */
   ciContext?: string;
   /** Mid-turn interjection chrome; system blocks only. Body lives in text. */
   interjection?: InterjectionMeta;

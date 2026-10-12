@@ -182,6 +182,12 @@ import {
 import { SessionFolderPicker } from "./SessionFolderPicker";
 import { MCP_COMMAND, isMcpCommand } from "../model/mcpCommand";
 import {
+  GIT_ACTION_COMMANDS,
+  GIT_ACTION_COMMAND_NAMES,
+  parseGitActionCommand,
+  type GitActionCommand,
+} from "../../source-control/model/git-actions";
+import {
   mcpContextText,
   mcpTagParts,
   newMcpTag,
@@ -278,6 +284,8 @@ type Props = {
   onSaveDraft?: (text: string, attachments: Attachment[]) => boolean | void;
   onStop?: () => void;
   onCompactContext?: () => boolean;
+  /** Run a `/commit`, `/pr`, `/merge`… command; false keeps the draft. */
+  onGitAction?: (command: GitActionCommand) => boolean | void;
   onPlaceInFolder?: (target: SessionFolderTarget) => void;
   onDeleteQueuedMessage?: (messageId: string) => void;
   onEditQueuedMessage?: (messageId: string, text: string) => void;
@@ -393,6 +401,7 @@ export function Composer({
   onSaveDraft,
   onStop,
   onCompactContext,
+  onGitAction,
   onPlaceInFolder,
   onDeleteQueuedMessage,
   onEditQueuedMessage,
@@ -551,11 +560,13 @@ export function Composer({
             ...(canSaveDraft && onSaveDraft ? [DRAFT_COMMAND] : []),
             COMPACT_COMMAND,
             ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
+            ...(onGitAction ? GIT_ACTION_COMMANDS : []),
             ...skills.filter(
               (skill) =>
                 ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
                   skill.name,
                 ) &&
+                !(onGitAction && GIT_ACTION_COMMAND_NAMES.has(skill.name)) &&
                 (skill.kind === "native" ||
                   (skill.name !== PLAN_COMMAND.name &&
                     skill.name !== COMPACT_COMMAND.name &&
@@ -574,6 +585,7 @@ export function Composer({
       hideTopBar,
       canSaveDraft,
       onSaveDraft,
+      onGitAction,
     ],
   );
   const skillLimit = hasNativeCommands(harness)
@@ -1297,6 +1309,23 @@ export function Composer({
       setSlash(null);
       syncHasValue("", attachments);
       openMcpPicker();
+      return;
+    }
+    const gitCommand =
+      onGitAction && !remote && !draftSelected
+        ? parseGitActionCommand(value)
+        : null;
+    if (gitCommand && onGitAction) {
+      if (onGitAction(gitCommand) === false) return;
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setSlash(null);
+      setMention(null);
+      syncHasValue("", attachmentsRef.current);
       return;
     }
     const draftCommand = canSaveDraft

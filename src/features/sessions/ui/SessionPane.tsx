@@ -11,6 +11,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { useGitActions } from "../../source-control/hooks/use-git-actions";
+import { MergePrDialog } from "../../source-control/ui/merge-pr-dialog";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -638,6 +640,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
     monoTranscript.viewingOlderPage ||
     !!draftBlock;
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
+  const gitActionsEnabled =
+    !remote && !agent && !managed && !session.inboxAsk && looksLikeProject(session.cwd);
+  const gitActions = useGitActions({
+    cwd: workCwd,
+    branch: session.branch,
+    submit: ({ text, instructions }) =>
+      onSubmit(session.id, text, [], { instructions }),
+  });
   // The agent's input always sits at the bottom, like a chat.
   const dockComposer =
     remoteSessionLoading ||
@@ -752,6 +762,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onBtwCommand={btw.openWith}
       onStop={() => onStop(session.id)}
       onCompactContext={() => onCompactContext(session.id)}
+      onGitAction={gitActionsEnabled ? gitActions.run : undefined}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
@@ -1266,6 +1277,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
           />
+          {gitActions.merge ? (
+            <MergePrDialog
+              cwd={workCwd}
+              initialMethod={gitActions.merge.method}
+              onClose={gitActions.closeMerge}
+            />
+          ) : null}
         </div>
       </div>
     </div>

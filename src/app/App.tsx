@@ -6978,9 +6978,10 @@ function Workspace({
       const rawCommand =
         !operatorCommand.matched &&
         isNativeCommandPrompt(submittedText, current.harness);
-      const ciContext = options?.ciRepair?.prompt ?? options?.ciContext;
+      const instructions = options?.ciRepair?.prompt ?? options?.instructions;
+      const ciContext = instructions ?? options?.ciContext;
       const harnessText =
-        options?.ciRepair?.prompt ??
+        instructions ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch = pendingComposerSwitch(current);
@@ -7113,7 +7114,8 @@ function Workspace({
           current.worktreePreparing ||
           intent === "plan" ||
           intent === "orchestrate" ||
-          operatorCommand.matched
+          operatorCommand.matched ||
+          (options?.instructions && !options.queuedMessageId)
             ? "queue"
             : // The agent has yielded and only background work is left, which
               // may never end (a dev server). Queuing would park the message
@@ -7142,6 +7144,9 @@ function Workspace({
                         id: crypto.randomUUID(),
                         text,
                         attachments,
+                        ...(options?.instructions
+                          ? { instructions: options.instructions }
+                          : {}),
                         noteCard,
                         handoffCard,
                         intent,
@@ -8867,6 +8872,7 @@ function Workspace({
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
                 handoffCard: head.handoffCard,
+                instructions: head.instructions,
                 intent: head.intent,
                 ...(head.monoSessionCompletion
                   ? {
@@ -9023,6 +9029,7 @@ function Workspace({
         queuedMessageId: message.id,
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
+        instructions: message.instructions,
         intent: message.intent,
       });
     },
