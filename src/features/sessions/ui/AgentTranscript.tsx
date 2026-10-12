@@ -82,6 +82,7 @@ import { resolveModel } from "../model/models";
 import { harnessForTurn } from "../model/secondOpinion";
 import { TranscriptTurnCache } from "../model/transcriptTurnCache";
 import { Shimmer } from "../../../shared/ui/Shimmer";
+import { ShellRunRow } from "./shell-run-row";
 import {
   hasPendingApproval,
   HARNESS_TITLE,
@@ -728,7 +729,11 @@ function AgentTranscriptComponent({
   // A scheduled update can land while the chat's own turn is still running.
   const activeTurnIndex = turns.reduce(
     (latest, turn, index) =>
-      turn[0].monoHabit || turn[0].role === "handoff" ? latest : index,
+      turn[0].monoHabit ||
+      turn[0].role === "handoff" ||
+      (turn[0].shellRun && !turn[0].shellRun.inTurn)
+        ? latest
+        : index,
     -1,
   );
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount);
@@ -2336,6 +2341,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
   if (block.role === "system") {
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
+    }
+    if (block.shellRun) {
+      return <ShellRunRow run={block.shellRun} embedded={embedded} />;
     }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>

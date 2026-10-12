@@ -49,6 +49,7 @@ import type {
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
 
 import { restoreOrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
+import { sanitizeShellRun } from "../model/shell-command";
 
 import type { OrchestrationSummary } from "../../orchestration/model/orchestrationSummary";
 
@@ -1022,6 +1023,8 @@ function sanitizeBlock(
     if (block.notice === "error" || block.notice === "interrupt") {
       next.notice = block.notice;
     }
+    const shellRun = sanitizeShellRun(block.shellRun);
+    if (shellRun) next.shellRun = shellRun;
   }
   return next;
 }
