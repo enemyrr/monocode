@@ -120,6 +120,12 @@ import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
+import { isShellDraft, parseShellCommand } from "../model/shell-command";
+import {
+  SHELL_PREFIX_CLASS,
+  ShellModeHint,
+  type ComposerShellCommand,
+} from "./shell-mode";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
@@ -274,6 +280,8 @@ type Props = {
     text: string,
     options?: { draft?: boolean },
   ) => boolean | void;
+  /** Runs a `!<command>` draft in the shell instead of sending it. */
+  shellCommand?: ComposerShellCommand;
   canSaveDraft?: boolean;
   onSaveDraft?: (text: string, attachments: Attachment[]) => boolean | void;
   onStop?: () => void;
@@ -389,6 +397,7 @@ export function Composer({
   onQuestionReply,
   onQuestionInteraction,
   onSubmit,
+  shellCommand,
   canSaveDraft = false,
   onSaveDraft,
   onStop,
@@ -588,6 +597,13 @@ export function Composer({
     [slashItems],
   );
   const leadingMode = leadingModeCommand(draft, skillNames);
+  const shellMode =
+    !!shellCommand &&
+    isShellDraft(draft) &&
+    attachments.length === 0 &&
+    !inboxCard &&
+    !noteCard &&
+    !handoffCard;
   const modeIndent = leadingMode ? MODE_COMMAND_INDENT : undefined;
   useLayoutEffect(() => {
     // The indent can rewrap the first line after the input already resized.
@@ -1327,6 +1343,29 @@ export function Composer({
       syncHasValue("", []);
       return;
     }
+    if (
+      shellCommand &&
+      isShellDraft(value) &&
+      attachmentsRef.current.length === 0 &&
+      !inboxCard &&
+      !noteCard &&
+      !handoffCard
+    ) {
+      const command = parseShellCommand(value);
+      if (!command || shellCommand.unavailable) return;
+      if (shellCommand.onRun(command) === false) return;
+      pasteGenerationRef.current += 1;
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setSlash(null);
+      setMention(null);
+      syncHasValue("", []);
+      return;
+    }
     const folderCommand = consumeSessionFolderCommand(value);
     const btwCommand = consumeBtwCommand(value);
     if (
@@ -2022,6 +2061,10 @@ export function Composer({
             </p>
           ) : null}
 
+          {shellMode && shellCommand ? (
+            <ShellModeHint shell={shellCommand} />
+          ) : null}
+
           {inboxCard ? (
             <InboxMiniCard card={inboxCard} onDismiss={onInboxCardDismiss} />
           ) : null}
@@ -2048,6 +2091,7 @@ export function Composer({
             >
               <ComposerHighlight
                 text={draft}
+                shell={shellMode}
                 mode={leadingMode}
                 names={skillNames}
                 mentions={mentionIndex.labels}
@@ -2421,17 +2465,29 @@ export function Composer({
 
 function ComposerHighlight({
   text,
+  shell,
   mode,
   names,
   mentions,
   mcpTags,
 }: {
   text: string;
+  shell: boolean;
   mode: ModeCommandToken | null;
   names: ReadonlySet<string>;
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
 }) {
+  if (shell) {
+    const bang = text.indexOf("!") + 1;
+    return (
+      <>
+        <span className={SHELL_PREFIX_CLASS}>{text.slice(0, bang)}</span>
+        {text.slice(bang)}
+        {text.endsWith("\n") ? "\n" : null}
+      </>
+    );
+  }
   const rest = mode ? text.slice(mode.end) : text;
   const parts = skillTextParts(rest, names);
   return (
