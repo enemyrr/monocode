@@ -59,7 +59,7 @@ trap 'rm -rf "$WORK"' EXIT
 node -e '
   const [identity, pubkey, endpoint] = process.argv.slice(1);
   console.log(JSON.stringify({
-    build: { beforeBuildCommand: "pnpm run build" },
+    build: { beforeBuildCommand: "./node_modules/.bin/tsc && ./node_modules/.bin/vite build" },
     bundle: { createUpdaterArtifacts: false, macOS: { signingIdentity: identity } },
     plugins: { updater: { pubkey, endpoints: [endpoint] } },
   }));
