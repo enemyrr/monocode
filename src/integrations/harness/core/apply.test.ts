@@ -1493,6 +1493,41 @@ describe("subagent steps", () => {
     expect(session.blocks[0].tool?.status).toBe("completed");
   });
 
+  it("keeps the latest effort and token count through later steps", () => {
+    let session = applyHarnessEvent(newSession("claude", "/tmp"), {
+      type: "tool.started",
+      callId: "spawn",
+      kind: "agent",
+      title: "Explore",
+      agentEffort: "high",
+    });
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "spawn",
+      kind: "agent",
+      agentTokens: 1_200,
+    });
+    session = applyHarnessEvent(session, {
+      type: "agent.step",
+      callId: "spawn",
+      stepId: "s1",
+      kind: "message",
+      text: "Reading",
+    });
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "spawn",
+      kind: "agent",
+      status: "completed",
+      agentTokens: 106_300,
+    });
+    expect(session.blocks[0].agentRun).toMatchObject({
+      effort: "high",
+      tokens: 106_300,
+      steps: [{ text: "Reading" }],
+    });
+  });
+
   const spawn = () =>
     applyHarnessEvent(newSession("claude", "/tmp"), {
       type: "tool.started",

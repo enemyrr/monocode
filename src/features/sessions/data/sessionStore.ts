@@ -1338,6 +1338,14 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
     ...(typeof record.agentType === "string" && record.agentType.trim()
       ? { agentType: record.agentType.trim() }
       : {}),
+    ...(typeof record.effort === "string" && record.effort.trim()
+      ? { effort: record.effort.trim() }
+      : {}),
+    ...(typeof record.tokens === "number" &&
+    Number.isFinite(record.tokens) &&
+    record.tokens > 0
+      ? { tokens: record.tokens }
+      : {}),
     steps: steps.slice(-PERSISTED_AGENT_STEPS),
   };
 }

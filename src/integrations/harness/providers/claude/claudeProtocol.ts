@@ -661,6 +661,8 @@ export type ClaudeAgentTaskProgress = {
   subagentType?: string;
   lastToolName?: string;
   summary?: string;
+  /** `usage.total_tokens`: what the subagent has used so far. */
+  tokens?: number;
 };
 
 export function parseTaskProgress(
@@ -681,6 +683,7 @@ export function parseTaskProgress(
     subagentType: stringField(rec, "subagent_type"),
     lastToolName: stringField(rec, "last_tool_name"),
     summary: stringField(rec, "summary"),
+    ...taskTokens(rec),
   };
 }
 
@@ -725,6 +728,7 @@ export type ClaudeAgentTaskNotification = {
   status: string;
   summary: string;
   ambient: boolean;
+  tokens?: number;
 };
 
 export function parseTaskNotification(
@@ -744,7 +748,49 @@ export function parseTaskNotification(
     status: stringField(rec, "status") ?? "completed",
     summary: stringField(rec, "summary") ?? "",
     ambient: rec.ambient === true,
+    ...taskTokens(rec),
   };
+}
+
+function taskTokens(rec: Record<string, unknown>): { tokens?: number } {
+  const tokens = numberField(asRecord(rec.usage), "total_tokens");
+  return tokens > 0 ? { tokens } : {};
+}
+
+/** Effort levels the Agent tool accepts by name; "lower"/"higher" are relative. */
+const AGENT_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * The model and effort an Agent call asks for. Claude reports no resolved
+ * effort for a subagent, so the requested level is the only one there is.
+ */
+export function agentSettingsFromInput(
+  name: string,
+  input: Record<string, unknown>,
+): { agentModel?: string; agentEffort?: string } {
+  if (!isAgentToolName(name)) return {};
+  const model = stringField(input, "model");
+  const effort = stringField(input, "effort");
+  return {
+    ...(model ? { agentModel: model } : {}),
+    ...(effort && AGENT_EFFORT_LEVELS.has(effort)
+      ? { agentEffort: effort }
+      : {}),
+  };
+}
+
+/**
+ * `totalTokens` from the structured result of a finished Agent call. It rides
+ * on the message, not the block, so only a single-result message is read.
+ */
+export function agentResultTokens(
+  rec: Record<string, unknown>,
+): number | undefined {
+  if (toolResultsFromUserMessage(rec).length !== 1) return undefined;
+  const result = asRecord(rec.tool_use_result);
+  if (stringField(result, "status") !== "completed") return undefined;
+  const tokens = numberField(result, "totalTokens");
+  return tokens > 0 ? tokens : undefined;
 }
 
 export type ClaudeBackgroundTask = {

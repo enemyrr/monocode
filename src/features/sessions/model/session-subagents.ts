@@ -44,6 +44,8 @@ export function collectSessionSubagents(
     const state = toolCallState(block);
     const subagentType = block.agentRun?.agentType?.trim();
     const model = subagentModelName(block);
+    const effort = block.agentRun?.effort?.trim();
+    const tokens = block.agentRun?.tokens;
     subagents.push({
       id: block.id,
       title: subagentName(block),
@@ -52,6 +54,8 @@ export function collectSessionSubagents(
         ? { subagentType: formatSubagentType(subagentType) }
         : {}),
       ...(model ? { model } : {}),
+      ...(effort ? { effort: formatEffort(effort) } : {}),
+      ...(tokens ? { tokens } : {}),
       status:
         state === "rejected"
           ? "failed"
@@ -69,6 +73,12 @@ export function collectSessionSubagents(
 function formatSubagentType(type: string): string {
   const spaced = type.replace(/[_-]+/g, " ").trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/** "xhigh" reads as "Extra High", "high" as "High". */
+function formatEffort(effort: string): string {
+  if (effort.toLowerCase() === "xhigh") return "Extra High";
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
 export function isFinishedSubagent(subagent: SessionSubagent): boolean {

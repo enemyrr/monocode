@@ -22,6 +22,8 @@ import {
   assistantTextBlocks,
   assistantThinkingBlocks,
   assistantToolUses,
+  agentResultTokens,
+  agentSettingsFromInput,
   contextFromResult,
   contextUsedFromAssistant,
   turnMetricsFromResult,
@@ -777,9 +779,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentSettingsFromInput(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -802,9 +802,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentSettingsFromInput(tool.name, tool.input),
       status: "pending",
       detail: summarizeToolRequest(tool.name, parsed),
       preview: previewFromTool(tool.name, parsed),
@@ -848,9 +846,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
           callId: streamed.id,
           title: streamed.title,
           kind: toolKindFromName(streamed.name),
-          ...(isAgentToolName(streamed.name) && stringField(use.input, "model")
-            ? { agentModel: stringField(use.input, "model") }
-            : {}),
+          ...agentSettingsFromInput(streamed.name, use.input),
           status: isAgentToolName(streamed.name) ? "in_progress" : "pending",
           preview: previewFromTool(streamed.name, use.input),
         });
@@ -875,9 +871,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentSettingsFromInput(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -912,11 +906,15 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
     if (isAgentToolName(tool.name) && isBackgroundedAgentTool(live, tool.id)) {
       continue;
     }
+    const agentTokens = isAgentToolName(tool.name)
+      ? agentResultTokens(rec)
+      : undefined;
     live.onEvent({
       type: "tool.updated",
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
+      ...(agentTokens ? { agentTokens } : {}),
       status: result.isError ? "failed" : "completed",
       detail: result.text || undefined,
       preview: previewFromTool(tool.name, tool.input, result.text),
@@ -1241,6 +1239,7 @@ function handleAgentLifecycle(
       title,
       "in_progress",
       detail,
+      progress.tokens,
     );
     return true;
   }
@@ -1284,6 +1283,7 @@ function handleAgentLifecycle(
         notice.taskId,
         notice.status === "completed" ? "completed" : "failed",
         notice.summary || undefined,
+        notice.tokens,
       );
     }
     return true;
@@ -1494,8 +1494,10 @@ function upsertAgentTool(
   title: string,
   status: string,
   detail?: string,
+  tokens?: number,
 ): void {
   const id = callId ?? `agent:${title}`;
+  const usage = tokens ? { agentTokens: tokens } : {};
   const existing = live.toolsById.get(id);
   if (!existing) {
     live.toolsById.set(id, {
@@ -1511,6 +1513,7 @@ function upsertAgentTool(
       title,
       kind: "agent",
       status,
+      ...usage,
     });
     if (
       status !== "in_progress" &&
@@ -1524,6 +1527,7 @@ function upsertAgentTool(
         kind: "agent",
         status,
         ...(detail ? { detail } : {}),
+        ...usage,
       });
     }
     return;
@@ -1536,6 +1540,7 @@ function upsertAgentTool(
     kind: "agent",
     status,
     ...(detail ? { detail } : {}),
+    ...usage,
   });
 }
 
@@ -1544,6 +1549,7 @@ function completeAgentTask(
   taskId: string,
   status: string,
   detail?: string,
+  tokens?: number,
 ): void {
   const task = live.agentTasks.get(taskId);
   live.agentTasks.delete(taskId);
@@ -1554,6 +1560,7 @@ function completeAgentTask(
       task.description,
       status,
       detail ?? (status === "failed" ? "Subagent failed." : undefined),
+      tokens,
     );
   }
   maybeFinishTurn(live);

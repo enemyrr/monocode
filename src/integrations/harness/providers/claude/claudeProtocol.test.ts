@@ -4,6 +4,8 @@ import {
   modelsFromClaudeListModels,
 } from "./claudeCatalog";
 import {
+  agentResultTokens,
+  agentSettingsFromInput,
   applyClaudePromptEffortPrefix,
   applyClaudeTaskTool,
   askUserQuestionAllowInput,
@@ -1032,5 +1034,75 @@ describe("isReplayedTaskNotificationResult", () => {
     expect(
       isReplayedTaskNotificationResult({ type: "result", num_turns: 0 }),
     ).toBe(false);
+  });
+});
+
+describe("subagent usage", () => {
+  it("reads total_tokens from task progress and notifications", () => {
+    expect(
+      parseTaskProgress({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "t1",
+        description: "Explore",
+        usage: { total_tokens: 12_400, tool_uses: 3, duration_ms: 900 },
+      }),
+    ).toMatchObject({ taskId: "t1", tokens: 12_400 });
+    expect(
+      parseTaskNotification({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "t1",
+        status: "completed",
+        summary: "Done",
+        usage: { total_tokens: 106_300, tool_uses: 9, duration_ms: 4_000 },
+      }),
+    ).toMatchObject({ taskId: "t1", tokens: 106_300 });
+    expect(
+      parseTaskNotification({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "t1",
+        status: "completed",
+      }),
+    ).not.toHaveProperty("tokens");
+  });
+
+  it("reads totalTokens from a completed Agent result", () => {
+    const message = (result: unknown, blocks = 1) => ({
+      type: "user",
+      message: {
+        role: "user",
+        content: Array.from({ length: blocks }, (_, index) => ({
+          type: "tool_result",
+          tool_use_id: `toolu_${index}`,
+          content: "report",
+        })),
+      },
+      tool_use_result: result,
+    });
+    expect(
+      agentResultTokens(
+        message({ status: "completed", agentId: "a1", totalTokens: 8_200 }),
+      ),
+    ).toBe(8_200);
+    expect(
+      agentResultTokens(message({ status: "async_launched", agentId: "a1" })),
+    ).toBeUndefined();
+    // The structured result belongs to the message, so two results are ambiguous.
+    expect(
+      agentResultTokens(
+        message({ status: "completed", totalTokens: 8_200 }, 2),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("takes the requested model and named effort from an Agent call", () => {
+    expect(
+      agentSettingsFromInput("Agent", { model: "opus", effort: "xhigh" }),
+    ).toEqual({ agentModel: "opus", agentEffort: "xhigh" });
+    // A relative step names no level the row could show.
+    expect(agentSettingsFromInput("Agent", { effort: "lower" })).toEqual({});
+    expect(agentSettingsFromInput("Read", { model: "opus" })).toEqual({});
   });
 });

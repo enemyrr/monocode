@@ -1004,7 +1004,21 @@ function mapSubAgentActivity(
     callId,
     title,
     kind: "agent",
+    ...codexAgentSettings(item),
     status: "in_progress",
+  };
+}
+
+/** The model and reasoning effort a spawn item or child thread reports. */
+export function codexAgentSettings(item: Record<string, unknown> | null): {
+  agentModel?: string;
+  agentEffort?: string;
+} {
+  const model = stringField(item, "model");
+  const effort = stringField(item, "reasoningEffort");
+  return {
+    ...(model ? { agentModel: model } : {}),
+    ...(effort ? { agentEffort: effort } : {}),
   };
 }
 
@@ -1056,9 +1070,7 @@ function mapCollabAgentToolCall(
     callId,
     title,
     kind: spawns ? "agent" : "other",
-    ...(spawns && stringField(item, "model")
-      ? { agentModel: stringField(item, "model") }
-      : {}),
+    ...(spawns ? codexAgentSettings(item) : {}),
     status: settled ? (failed ? "failed" : "completed") : "in_progress",
     ...(detail ? { detail } : {}),
   };
@@ -1152,9 +1164,17 @@ export function mapCodexSubagentSteps(
   params: unknown,
 ): HarnessEvent[] {
   if (method === "thread/started") {
-    const model = stringField(asRecord(asRecord(params)?.thread), "model");
-    return model
-      ? [{ type: "tool.updated", callId, kind: "agent", agentModel: model }]
+    const settings = codexAgentSettings(asRecord(asRecord(params)?.thread));
+    return Object.keys(settings).length > 0
+      ? [{ type: "tool.updated", callId, kind: "agent", ...settings }]
+      : [];
+  }
+  if (method === "thread/tokenUsage/updated") {
+    // `total` is the child thread's running sum, so the latest reading wins.
+    const total = asRecord(asRecord(asRecord(params)?.tokenUsage)?.total);
+    const tokens = numberField(total, "totalTokens");
+    return tokens > 0
+      ? [{ type: "tool.updated", callId, kind: "agent", agentTokens: tokens }]
       : [];
   }
   if (method !== "item/started" && method !== "item/completed") return [];

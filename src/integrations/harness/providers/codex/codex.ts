@@ -26,6 +26,7 @@ import {
   buildTurnSteerParams,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
+  codexAgentSettings,
   codexSubagentStates,
   codexSubagentThreadIds,
   mapCodexNotification,
@@ -1193,13 +1194,13 @@ function bindSubagentThreads(
   for (const childId of children) {
     const owner = live.subagentThreads.get(childId);
     if (owner) {
-      const model = stringField(item, "model");
-      if (model && item.tool === "spawnAgent")
+      const settings = codexAgentSettings(item);
+      if (Object.keys(settings).length > 0 && item.tool === "spawnAgent")
         live.onEvent({
           type: "tool.updated",
           callId: owner,
           kind: "agent",
-          agentModel: model,
+          ...settings,
         });
       if (owner !== callId) claimed += 1;
       continue;

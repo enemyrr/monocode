@@ -631,19 +631,40 @@ describe("mapCodexNotification", () => {
     });
   });
 
-  it("retains the explicitly selected spawn model", () => {
+  it("retains the explicitly selected spawn model and effort", () => {
     const { events } = mapCodexNotification("item/completed", {
       item: {
         id: "spawn",
         type: "collabAgentToolCall",
         tool: "spawnAgent",
         model: "gpt-5.6-sol",
+        reasoningEffort: "high",
         status: "completed",
       },
     });
     expect(events[0]).toMatchObject({
       kind: "agent",
       agentModel: "gpt-5.6-sol",
+      agentEffort: "high",
+    });
+  });
+
+  it("carries the effort a subagent activity resolved at creation", () => {
+    const { events } = mapCodexNotification("item/completed", {
+      item: {
+        id: "activity",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thr_child",
+        agentPath: "/root/explorer",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "medium",
+      },
+    });
+    expect(events[0]).toMatchObject({
+      kind: "agent",
+      agentModel: "gpt-5.6-sol",
+      agentEffort: "medium",
     });
   });
 
@@ -1092,5 +1113,43 @@ describe("mapCodexSubagentSteps", () => {
   it("leaves a settled child's result off its step", () => {
     const steps = subagentBash("completed", "12 passed");
     expect(steps[0]).not.toHaveProperty("detail");
+  });
+
+  it("reads the child thread's model and effort when it starts", () => {
+    expect(
+      mapCodexSubagentSteps("agent-1", "thread/started", {
+        thread: { id: "thr_1", model: "gpt-5.6-sol", reasoningEffort: "low" },
+      }),
+    ).toEqual([
+      {
+        type: "tool.updated",
+        callId: "agent-1",
+        kind: "agent",
+        agentModel: "gpt-5.6-sol",
+        agentEffort: "low",
+      },
+    ]);
+  });
+
+  it("reports the child thread's running token total", () => {
+    const usage = (totalTokens: number) =>
+      mapCodexSubagentSteps("agent-1", "thread/tokenUsage/updated", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        tokenUsage: {
+          total: { totalTokens },
+          last: { totalTokens: 1_000 },
+          modelContextWindow: 200_000,
+        },
+      });
+    expect(usage(42_500)).toEqual([
+      {
+        type: "tool.updated",
+        callId: "agent-1",
+        kind: "agent",
+        agentTokens: 42_500,
+      },
+    ]);
+    expect(usage(0)).toEqual([]);
   });
 });

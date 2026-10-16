@@ -58,6 +58,21 @@ describe("collectSessionSubagents", () => {
     ]);
   });
 
+  it("reads the effort and token count the provider reported", () => {
+    const [subagent] = collectSessionSubagents([
+      run("a", "completed", {
+        agentRun: {
+          name: "Explore",
+          effort: "xhigh",
+          tokens: 106_300,
+          steps: [],
+        },
+      }),
+    ]);
+    expect(subagent).toMatchObject({ effort: "Extra High", tokens: 106_300 });
+    expect(sessionSubagentMeta(subagent)).toBe("Extra High · 106K tokens");
+  });
+
   it("calls a pending run running only while the session works", () => {
     const blocks = [run("a", "in_progress")];
     expect(collectSessionSubagents(blocks, { live: true })[0].status).toBe(

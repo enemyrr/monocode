@@ -234,6 +234,10 @@ export type AgentRunMeta = {
   agentType?: string;
   /** Model reported for the child, which may differ from its parent. */
   model?: string;
+  /** Reasoning effort the provider reports for the child, e.g. "high". */
+  effort?: string;
+  /** Total tokens the child has used so far, as the provider counts them. */
+  tokens?: number;
   steps: AgentStep[];
 };
 
