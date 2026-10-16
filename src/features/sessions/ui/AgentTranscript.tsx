@@ -28,6 +28,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
   type RefObject,
@@ -55,8 +56,9 @@ import { TerminalSpinner } from "./TerminalSpinner";
 import { SubagentChip } from "./subagent-chip";
 import {
   archiveFinishedSubagents,
-  collectSessionSubagents,
+  SessionSubagentCache,
   unarchivedSubagents,
+  type SessionSubagent,
 } from "../model/session-subagents";
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
@@ -970,11 +972,14 @@ function AgentTranscriptComponent({
     onNavigateReady?.(navigateToBlock);
   }, [navigateToBlock, onNavigateReady]);
 
-  // A Mono's turns keep their process in the sidebar, so it has no chip.
-  const sessionSubagents = useMemo(
-    () => (inlineWork ? [] : collectSessionSubagents(blocks, { live: !!busy })),
-    [blocks, busy, inlineWork],
-  );
+  // A Mono's turns keep their process in the sidebar, so it has no chip. Only
+  // the active turn can hold a running run, the same rule as `settled`.
+  const [subagentCache] = useState(() => new SessionSubagentCache());
+  const sessionSubagents = inlineWork
+    ? NO_SUBAGENTS
+    : subagentCache.collect(turns, busy ? turns[activeTurnIndex] : undefined);
+  const sessionSubagentsRef = useRef(sessionSubagents);
+  sessionSubagentsRef.current = sessionSubagents;
   const [archivedSubagents, setArchivedSubagents] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -982,14 +987,17 @@ function AgentTranscriptComponent({
     () => unarchivedSubagents(sessionSubagents, archivedSubagents),
     [sessionSubagents, archivedSubagents],
   );
-  const [subagentFocus, setSubagentFocus] = useState<string | null>(null);
-  const subagentFocusValue = useMemo(
+  const archiveSubagents = useCallback(
     () =>
-      subagentFocus
-        ? { id: subagentFocus, consume: () => setSubagentFocus(null) }
-        : null,
-    [subagentFocus],
+      setArchivedSubagents((archived) =>
+        archiveFinishedSubagents(sessionSubagentsRef.current, archived),
+      ),
+    [],
   );
+  const [subagentFocus] = useState(() => new SubagentFocusStore());
+  // Opens the run's turn, phase, and row in one synchronous render, then
+  // aligns with instant scrolls: a smooth one loses to the scroll anchor
+  // while the opened fold grows the turn above the viewport.
   const focusSubagent = useCallback(
     (blockId: string) => {
       const turn = turnsRef.current.find((item) =>
@@ -997,15 +1005,36 @@ function AgentTranscriptComponent({
       );
       if (!turn || !revealBlock(blockId)) return;
       const turnId = turn[0].id;
-      // Unpins the transcript from the bottom, as a search jump does.
-      scroller.current?.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
-      // The row opens and scrolls itself in once it renders.
-      setOpenWork((current) =>
-        current[turnId] ? current : { ...current, [turnId]: true },
-      );
-      setSubagentFocus(blockId);
+      flushSync(() => {
+        setOpenWork((current) =>
+          current[turnId] ? current : { ...current, [turnId]: true },
+        );
+        subagentFocus.set(blockId);
+      });
+      const el = scroller.current;
+      if (!el) return;
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+      const align = () => {
+        const target = el.querySelector<HTMLElement>(
+          `[data-subagent-id="${CSS.escape(blockId)}"]`,
+        );
+        if (!target) return;
+        const delta =
+          target.getBoundingClientRect().top -
+          el.getBoundingClientRect().top -
+          42;
+        if (Math.abs(delta) > 2) {
+          el.scrollTop += delta;
+          rememberScroll(el);
+        }
+      };
+      align();
+      requestAnimationFrame(() => {
+        align();
+        subagentFocus.set(null);
+      });
     },
-    [revealBlock],
+    [revealBlock, rememberScroll, subagentFocus],
   );
 
   useEffect(() => {
@@ -1064,7 +1093,7 @@ function AgentTranscriptComponent({
     >
       <TranscriptContent
         bottomAligned={bottomAligned}
-        subagentFocus={subagentFocusValue}
+        subagentFocus={subagentFocus}
       >
         {onReturnToLatest ? (
           <div className="flex justify-center px-4 py-2">
@@ -1643,11 +1672,7 @@ function AgentTranscriptComponent({
                 <SubagentChip
                   subagents={chipSubagents}
                   onSelect={focusSubagent}
-                  onArchiveFinished={() =>
-                    setArchivedSubagents((archived) =>
-                      archiveFinishedSubagents(sessionSubagents, archived),
-                    )
-                  }
+                  onArchiveFinished={archiveSubagents}
                 />
               ) : null}
               {/* The accessory keeps the pane's props, which go stale once parked. */}
@@ -1725,7 +1750,7 @@ function TranscriptContent({
   children,
 }: {
   bottomAligned: boolean;
-  subagentFocus: SubagentFocus | null;
+  subagentFocus: SubagentFocusStore;
   children: ReactNode;
 }) {
   const content = (
@@ -3608,14 +3633,15 @@ function ActivityPhaseGroup({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
-  const focus = useContext(SubagentFocusContext);
-  const focused = !!focus && phase.steps.some((step) => step.id === focus.id);
+  const focused = useSubagentFocused((id) =>
+    phase.steps.some((step) => step.id === id),
+  );
   const [override, setOverride] = useState<boolean | null>(
     focused ? true : null,
   );
-  const [seenFocus, setSeenFocus] = useState(focus);
-  if (seenFocus !== focus) {
-    setSeenFocus(focus);
+  const [wasFocused, setWasFocused] = useState(focused);
+  if (wasFocused !== focused) {
+    setWasFocused(focused);
     if (focused) setOverride(true);
   }
   const waiting = phase.steps.some(needsApproval);
@@ -3911,25 +3937,18 @@ function SubagentRow({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
-  const focus = useContext(SubagentFocusContext);
-  const focused = focus?.id === block.id;
+  const focused = useSubagentFocused((id) => id === block.id);
   const [override, setOverride] = useState<boolean | null>(
     focused ? true : null,
   );
-  const [seenFocus, setSeenFocus] = useState(focus);
-  if (seenFocus !== focus) {
-    setSeenFocus(focus);
+  const [wasFocused, setWasFocused] = useState(focused);
+  if (wasFocused !== focused) {
+    setWasFocused(focused);
     if (focused) setOverride(true);
   }
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!focused) return;
-    root.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-    focus.consume();
-  }, [focus, focused]);
   const open = override ?? toolCallState(block) === "rejected";
   return (
-    <div ref={root} className="flex min-w-0 flex-col">
+    <div data-subagent-id={block.id} className="flex min-w-0 flex-col">
       <SubagentPanel
         block={block}
         cwd={cwd}
@@ -3944,12 +3963,43 @@ function SubagentRow({
 }
 
 /**
- * The run the subagent chip asked for. The row and the phase that holds it
- * open on it; the row scrolls itself in and consumes it.
+ * The run the subagent chip asked for, held for one frame. The row and the
+ * phase that holds it open on it. Each reads a boolean through
+ * `useSubagentFocused`, so a click re-renders only those two.
  */
-type SubagentFocus = { id: string; consume: () => void };
+class SubagentFocusStore {
+  private id: string | null = null;
+  private listeners = new Set<() => void>();
 
-const SubagentFocusContext = createContext<SubagentFocus | null>(null);
+  get = (): string | null => this.id;
+
+  set(id: string | null) {
+    this.id = id;
+    for (const listener of this.listeners) listener();
+  }
+
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+}
+
+const SubagentFocusContext = createContext<SubagentFocusStore | null>(null);
+
+const NO_SUBAGENTS: SessionSubagent[] = [];
+
+const noFocus = () => () => {};
+
+function useSubagentFocused(matches: (id: string) => boolean): boolean {
+  const store = useContext(SubagentFocusContext);
+  const snapshot = () => {
+    const id = store?.get();
+    return !!id && matches(id);
+  };
+  return useSyncExternalStore(store?.subscribe ?? noFocus, snapshot, snapshot);
+}
 
 /**
  * One delegated run: its name, what it is doing, and — once opened — the trail

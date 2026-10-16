@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { Block } from "./session";
 import {
   archiveFinishedSubagents,
-  collectSessionSubagents,
+  SessionSubagentCache,
   sessionSubagentMeta,
   subagentCountLabel,
+  turnSubagents,
   unarchivedSubagents,
   type SessionSubagent,
 } from "./session-subagents";
@@ -29,23 +30,24 @@ function user(id: string, harness: "claude" | "codex"): Block {
   };
 }
 
-describe("collectSessionSubagents", () => {
+describe("SessionSubagentCache", () => {
   it("collects runs across turns with the harness of the turn that spawned them", () => {
-    const blocks: Block[] = [
-      user("u1", "claude"),
-      run("a", "completed", {
-        agentRun: {
-          name: "Map company data. Then check the AI.",
-          agentType: "general-purpose",
-          model: "custom-model-x",
-          steps: [],
-        },
-      }),
-      { id: "t", role: "tool", text: "Read", tool: { kind: "read" } },
-      user("u2", "codex"),
-      run("b", "failed"),
+    const turns: Block[][] = [
+      [
+        user("u1", "claude"),
+        run("a", "completed", {
+          agentRun: {
+            name: "Map company data. Then check the AI.",
+            agentType: "general-purpose",
+            model: "custom-model-x",
+            steps: [],
+          },
+        }),
+        { id: "t", role: "tool", text: "Read", tool: { kind: "read" } },
+      ],
+      [user("u2", "codex"), run("b", "failed")],
     ];
-    expect(collectSessionSubagents(blocks)).toEqual([
+    expect(new SessionSubagentCache().collect(turns)).toEqual([
       {
         id: "a",
         title: "Map company data.",
@@ -59,7 +61,7 @@ describe("collectSessionSubagents", () => {
   });
 
   it("reads the effort and token count the provider reported", () => {
-    const [subagent] = collectSessionSubagents([
+    const [subagent] = turnSubagents([
       run("a", "completed", {
         agentRun: {
           name: "Explore",
@@ -73,17 +75,41 @@ describe("collectSessionSubagents", () => {
     expect(sessionSubagentMeta(subagent)).toBe("Extra High · 106K tokens");
   });
 
-  it("calls a pending run running only while the session works", () => {
-    const blocks = [run("a", "in_progress")];
-    expect(collectSessionSubagents(blocks, { live: true })[0].status).toBe(
-      "running",
+  it("calls a pending run running only in the active turn", () => {
+    const old = [user("u1", "claude"), run("a", "in_progress")];
+    const current = [user("u2", "claude"), run("b", "in_progress")];
+    const statuses = new SessionSubagentCache()
+      .collect([old, current], current)
+      .map((subagent) => subagent.status);
+    expect(statuses).toEqual(["stopped", "running"]);
+  });
+
+  it("keeps the same list while nothing a row shows changed", () => {
+    const cache = new SessionSubagentCache();
+    const settled = [user("u1", "claude"), run("a", "completed")];
+    const first = cache.collect(
+      [settled, [user("u2", "claude"), run("b", "in_progress")]],
+      undefined,
     );
-    expect(collectSessionSubagents(blocks)[0].status).toBe("stopped");
+    const streamed = [
+      user("u2", "claude"),
+      run("b", "in_progress"),
+      { id: "p", role: "assistant", text: "more" } satisfies Block,
+    ];
+    expect(cache.collect([settled, streamed])).toBe(first);
+  });
+
+  it("calls a run cancelled on relaunch stopped, not failed", () => {
+    expect(
+      turnSubagents([run("a", "cancelled"), run("b", "canceled")]).map(
+        (subagent) => subagent.status,
+      ),
+    ).toEqual(["stopped", "stopped"]);
   });
 
   it("skips a spawn still waiting on approval", () => {
     expect(
-      collectSessionSubagents([
+      turnSubagents([
         run("a", "pending", { role: "approval", approval: { requestId: 1 } }),
       ]),
     ).toEqual([]);

@@ -15,7 +15,7 @@ import {
 } from "../../../shared/lib/paths";
 import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
-import { allModels } from "./models";
+import { allModels, findModel } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
 
 export type ToolCallState = "pending" | "accepted" | "rejected";
@@ -753,8 +753,9 @@ export function subagentModelName(block: Block): string | undefined {
   const id = block.agentRun?.model?.trim();
   if (!id || /^(?:auto|default|inherit|unspecified)$/i.test(id))
     return undefined;
+  // Providers report native ids, which the id index does not hold.
   return (
-    allModels().find((model) => model.id === id || model.nativeId === id)
+    (findModel(id) ?? allModels().find((model) => model.nativeId === id))
       ?.name ?? id
   );
 }

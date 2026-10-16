@@ -7,7 +7,10 @@ import {
   toolCallState,
 } from "./transcriptActivity";
 
-/** "stopped" is a run still marked pending in a session that is no longer working. */
+/**
+ * "stopped" is a run cancelled on relaunch, or one still marked pending in a
+ * turn that is no longer working.
+ */
 export type SessionSubagentStatus = "running" | "done" | "failed" | "stopped";
 
 /**
@@ -27,21 +30,20 @@ export type SessionSubagent = {
   status: SessionSubagentStatus;
 };
 
-/** Every delegated run in a session, oldest first. */
-export function collectSessionSubagents(
-  blocks: Block[],
+/**
+ * The delegated runs in one turn. Only the turn the agent is working on can
+ * hold a running one; a run left pending in any other turn has stopped.
+ */
+export function turnSubagents(
+  turn: Block[],
   options?: { live?: boolean },
 ): SessionSubagent[] {
   const live = options?.live ?? false;
-  let harness: HarnessId | undefined;
+  const harness = turn.find((block) => block.role === "user" && block.turnModel)
+    ?.turnModel?.harness;
   const subagents: SessionSubagent[] = [];
-  for (const block of blocks) {
-    // A run belongs to the harness of the turn that spawned it.
-    if (block.role === "user" && block.turnModel) {
-      harness = block.turnModel.harness;
-    }
+  for (const block of turn) {
     if (!isSubagentBlock(block)) continue;
-    const state = toolCallState(block);
     const subagentType = block.agentRun?.agentType?.trim();
     const model = subagentModelName(block);
     const effort = block.agentRun?.effort?.trim();
@@ -56,17 +58,63 @@ export function collectSessionSubagents(
       ...(model ? { model } : {}),
       ...(effort ? { effort: formatEffort(effort) } : {}),
       ...(tokens ? { tokens } : {}),
-      status:
-        state === "rejected"
-          ? "failed"
-          : state === "pending"
-            ? live
-              ? "running"
-              : "stopped"
-            : "done",
+      status: subagentStatus(block, live),
     });
   }
   return subagents;
+}
+
+function subagentStatus(block: Block, live: boolean): SessionSubagentStatus {
+  // A relaunch cancels the work it found open; that run did not fail.
+  if (/^cancell?ed$/i.test(block.tool?.status ?? "")) return "stopped";
+  const state = toolCallState(block);
+  if (state === "rejected") return "failed";
+  if (state === "pending") return live ? "running" : "stopped";
+  return "done";
+}
+
+/**
+ * Every delegated run in a session, oldest first. Settled turns keep their
+ * array identity between updates, so their runs are read once; a streamed
+ * token only rescans the active turn, and an unchanged list keeps its identity.
+ */
+export class SessionSubagentCache {
+  private settled = new WeakMap<Block[], SessionSubagent[]>();
+  private last: SessionSubagent[] = [];
+
+  collect(turns: Block[][], activeTurn?: Block[]): SessionSubagent[] {
+    const next = turns.flatMap((turn) => {
+      if (turn === activeTurn) return turnSubagents(turn, { live: true });
+      let runs = this.settled.get(turn);
+      if (!runs) {
+        runs = turnSubagents(turn);
+        this.settled.set(turn, runs);
+      }
+      return runs;
+    });
+    if (sameSubagents(next, this.last)) return this.last;
+    this.last = next;
+    return next;
+  }
+}
+
+function sameSubagents(a: SessionSubagent[], b: SessionSubagent[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((run, index) => {
+      const other = b[index];
+      return (
+        run.id === other.id &&
+        run.title === other.title &&
+        run.harness === other.harness &&
+        run.subagentType === other.subagentType &&
+        run.model === other.model &&
+        run.effort === other.effort &&
+        run.tokens === other.tokens &&
+        run.status === other.status
+      );
+    })
+  );
 }
 
 /** "general-purpose" reads as "General purpose", "Explore" stays as it is. */
