@@ -270,6 +270,7 @@ export type SessionPaneProps = {
     modelSettings: Record<string, string>,
   ) => void;
   onNewTerminal: (sessionId: string, profile?: TerminalProfileId) => void;
+  onNewSession?: () => void;
 
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
@@ -376,6 +377,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onBtwStop,
   onBtwModelChange,
   onNewTerminal,
+  onNewSession,
   onShellRunBlock,
   onPaneDragStart,
   transcriptPool,
@@ -817,6 +819,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onStop={() => onStop(session.id)}
       onCompactContext={() => onCompactContext(session.id)}
       onGitAction={gitActionsEnabled ? gitActions.run : undefined}
+      onNewSession={agent || managed ? undefined : onNewSession}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}

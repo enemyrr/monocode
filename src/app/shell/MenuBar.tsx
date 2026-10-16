@@ -26,6 +26,7 @@ type Props = {
   onNew: () => void;
   onNewTerminal?: () => void;
   onNewTerminalTab?: () => void;
+  onNewSession?: () => void;
   onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onToggleTerminal?: () => void;
   onGoToFile?: () => void;
@@ -49,6 +50,7 @@ export function MenuBar({
   onNew,
   onNewTerminal,
   onNewTerminalTab,
+  onNewSession,
   onNewProfileTerminal,
   onToggleTerminal,
   onGoToFile,
@@ -156,6 +158,9 @@ export function MenuBar({
         case "new_tab":
           onNew();
           break;
+        case "new_session":
+          onNewSession?.();
+          break;
         case "new_terminal":
           onNewTerminal?.();
           break;
@@ -237,6 +242,7 @@ export function MenuBar({
       onNew,
       onNewTerminal,
       onNewTerminalTab,
+      onNewSession,
       onNewProfileTerminal,
       onToggleTerminal,
       onPickProject,
@@ -256,6 +262,12 @@ export function MenuBar({
     switch (key) {
       case "file":
         return [
+          {
+            kind: "item",
+            id: "new_session",
+            label: "New Session",
+            shortcut: shortcut("App: New Session", `${MOD}N`),
+          },
           {
             kind: "item",
             id: "new_tab",

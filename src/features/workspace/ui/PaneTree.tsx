@@ -189,6 +189,7 @@ type Shared = {
     position: TitleTabDropPosition,
   ) => void;
   onNewTerminal: (sessionId: string, profile?: TerminalProfileId) => void;
+  onNewSession?: () => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
 };
@@ -277,6 +278,7 @@ function PaneTreeComponent({
   onMovePane,
   onDetachPane,
   onNewTerminal,
+  onNewSession,
   onTerminalMetaChange,
   transcriptPool,
 }: Props) {
@@ -567,6 +569,7 @@ function PaneTreeComponent({
                   onShellRunBlock={onShellRunBlock}
                   onBtwModelChange={onBtwModelChange}
                   onNewTerminal={onNewTerminal}
+                  onNewSession={onNewSession}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
                 />

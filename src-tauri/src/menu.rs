@@ -160,6 +160,7 @@ pub fn dispatch(app: &AppHandle, id: &str) {
         // one window: a broadcast would make every window act on a single menu click. New Tab and
         // Close Tab also open or close a dock terminal when that window's dock has focus.
         "new_tab"
+        | "new_session"
         | "close_tab"
         | "toggle_sidebar"
         | "toggle_session_sidebar"
@@ -210,6 +211,14 @@ fn build(
     )?;
     let check_for_updates =
         MenuItemBuilder::with_id("check_for_updates", "Check for Updates…").build(app)?;
+    let new_session = menu_item(
+        app,
+        "new_session",
+        "New Session",
+        "CmdOrCtrl+N",
+        "App: New Session",
+        overrides,
+    )?;
     let new_window = menu_item(
         app,
         "new_window",
@@ -462,6 +471,7 @@ fn build(
     )?;
 
     let file = SubmenuBuilder::with_id(app, "file", "File")
+        .item(&new_session)
         .item(&new_window)
         .item(&open_project)
         .item(&open_search)

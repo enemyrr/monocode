@@ -189,6 +189,10 @@ import {
 import { SessionFolderPicker } from "./SessionFolderPicker";
 import { MCP_COMMAND, isMcpCommand } from "../model/mcpCommand";
 import {
+  NEW_SESSION_COMMAND,
+  isNewSessionCommand,
+} from "../model/new-session-command";
+import {
   GIT_ACTION_COMMANDS,
   GIT_ACTION_COMMAND_NAMES,
   parseGitActionCommand,
@@ -296,6 +300,8 @@ type Props = {
   onCompactContext?: () => boolean;
   /** Run a `/commit`, `/pr`, `/merge`… command; false keeps the draft. */
   onGitAction?: (command: GitActionCommand) => boolean | void;
+  /** Run `/new` or `/clear` as a new session instead of sending it. */
+  onNewSession?: () => void;
   onPlaceInFolder?: (target: SessionFolderTarget) => void;
   onDeleteQueuedMessage?: (messageId: string) => void;
   onEditQueuedMessage?: (messageId: string, text: string) => void;
@@ -414,6 +420,7 @@ export function Composer({
   onStop,
   onCompactContext,
   onGitAction,
+  onNewSession,
   onPlaceInFolder,
   onDeleteQueuedMessage,
   onEditQueuedMessage,
@@ -573,12 +580,14 @@ export function Composer({
             COMPACT_COMMAND,
             ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
             ...(onGitAction ? GIT_ACTION_COMMANDS : []),
+            ...(onNewSession ? [NEW_SESSION_COMMAND] : []),
             ...skills.filter(
               (skill) =>
                 ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
                   skill.name,
                 ) &&
                 !(onGitAction && GIT_ACTION_COMMAND_NAMES.has(skill.name)) &&
+                !(onNewSession && skill.name === NEW_SESSION_COMMAND.name) &&
                 (skill.kind === "native" ||
                   (skill.name !== PLAN_COMMAND.name &&
                     skill.name !== COMPACT_COMMAND.name &&
@@ -598,6 +607,7 @@ export function Composer({
       canSaveDraft,
       onSaveDraft,
       onGitAction,
+      onNewSession,
     ],
   );
   const skillLimit = hasNativeCommands(harness)
@@ -1328,6 +1338,24 @@ export function Composer({
       setSlash(null);
       syncHasValue("", attachments);
       openMcpPicker();
+      return;
+    }
+    if (
+      onNewSession &&
+      !remote &&
+      !draftSelected &&
+      isNewSessionCommand(value)
+    ) {
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setSlash(null);
+      setMention(null);
+      syncHasValue("", attachmentsRef.current);
+      onNewSession();
       return;
     }
     const gitCommand =

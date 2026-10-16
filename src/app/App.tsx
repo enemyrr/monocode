@@ -11995,6 +11995,7 @@ function Workspace({
   );
 
   const actions = useRef({
+    onNew,
     onNewFocused,
     onArchiveFocusedSession,
     onCloseOtherTabs,
@@ -12028,6 +12029,7 @@ function Workspace({
     onOpenApprovalSession,
   });
   actions.current = {
+    onNew,
     onNewFocused,
     onArchiveFocusedSession,
     onCloseOtherTabs,
@@ -12251,7 +12253,9 @@ function Workspace({
         e.preventDefault();
         e.stopPropagation();
         const a = actions.current;
-        if (shortcut === "App: New Window")
+        if (shortcut === "App: New Session")
+          run("new-session", a.onNew);
+        else if (shortcut === "App: New Window")
           run("new_window", () => void invoke("open_new_window"));
         else if (shortcut === "App: Open Project")
           run("open_project", () => void a.pickProject());
@@ -12281,6 +12285,7 @@ function Workspace({
   useEffect(() => {
     const unlisten: Array<Promise<() => void>> = [
       listen("new_tab", () => run("new", actions.current.onNewFocused)),
+      listen("new_session", () => run("new-session", actions.current.onNew)),
       listen("close_other_tabs", () =>
         run("close-others", actions.current.onCloseOtherTabs),
       ),
@@ -12552,6 +12557,7 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
+    onNewSession: onNew,
     onShellRunBlock,
   };
 
@@ -13059,6 +13065,7 @@ function Workspace({
                     onNew={onNewTab}
                     onNewTerminal={onNewTerminal}
                     onNewTerminalTab={onNewTerminalTab}
+                    onNewSession={onNew}
                     onNewProfileTerminal={onNewProfileTerminal}
                     onToggleTerminal={onToggleProjectTerminal}
                     onGoToFile={onGoToFile}
