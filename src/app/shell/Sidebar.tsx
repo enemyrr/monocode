@@ -161,6 +161,8 @@ import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotification
 import { RailAction } from "./RailAction";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { DevModeSlot, IconButton, TabVisitNav } from "./TitleBar";
+import { NewTabButton } from "./new-tab-button";
+import type { TerminalProfileId } from "../../features/terminal/model/terminal-profiles";
 import { ProjectSearch } from "../../features/projects/ui/ProjectSearch";
 import { Popover } from "../../shared/ui/Popover";
 import { SearchableProjectPicker } from "../../features/projects/ui/SearchableProjectPicker";
@@ -320,9 +322,10 @@ type Props = {
   onOpenProject?: () => void;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
-  /** The ⌘T "+" buttons; follows the "New tab opens" setting. */
-  onNewTab?: () => void;
   onNewTerminal?: () => void;
+  /** The "+" menu's terminal rows: a plain shell or an agent CLI tab. */
+  onNewTerminalTab?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onSearch?: () => void;
   onOpenInbox?: () => void;
   onOpenInboxItem?: (item: LinkedWorkItem, sessionId: string) => void;
@@ -419,7 +422,8 @@ function SidebarComponent({
   onOpenProject,
   onRemoveProject,
   onNew,
-  onNewTab = onNew,
+  onNewTerminalTab,
+  onNewProfileTerminal,
   onSearch,
   onOpenInbox,
   onOpenInboxItem,
@@ -1728,6 +1732,14 @@ function SidebarComponent({
     );
   });
 
+  const newButton = onNew ? (
+    <NewTabButton
+      onNewSession={() => void onNew()}
+      onNewTerminal={onNewTerminalTab}
+      onNewProfileTerminal={onNewProfileTerminal}
+    />
+  ) : null;
+
   const workspaceHeader = (
     <div
       className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5"
@@ -1748,7 +1760,7 @@ function SidebarComponent({
           </span>
         )}
       </div>
-      <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNewTab} />
+      <WorkspaceTitleActions onSearch={onGoToFile} newButton={newButton} />
     </div>
   );
 
@@ -1797,7 +1809,7 @@ function SidebarComponent({
               onSelectProject={onSelectProject}
               onOpenProject={onOpenProject}
               onRemoveProject={onRemoveProject}
-              onNew={onNewTab}
+              newButton={newButton}
               onSearch={onSearch}
               onOpenInbox={onOpenInbox}
               onOpenNotificationSettings={onOpenNotificationSettings}
@@ -2434,7 +2446,7 @@ function SidebarProjectPicker({
   onSelectProject,
   onOpenProject,
   onRemoveProject,
-  onNew,
+  newButton,
   onSearch,
   onOpenInbox,
   onOpenNotificationSettings,
@@ -2452,7 +2464,7 @@ function SidebarProjectPicker({
   onSelectProject: (path: string) => void;
   onOpenProject?: () => void;
   onRemoveProject?: Props["onRemoveProject"];
-  onNew?: () => string | void;
+  newButton?: ReactNode;
   onSearch?: () => void;
   onOpenInbox?: () => void;
   onOpenNotificationSettings?: (projectPath?: string) => void;
@@ -2484,11 +2496,7 @@ function SidebarProjectPicker({
         onOpenNotificationSettings={onOpenNotificationSettings}
       />
       <div className="ml-auto flex items-center">
-        {onNew ? (
-          <IconButton label={`New tab (${MOD}T)`} onClick={onNew}>
-            <Plus className="size-3.5" strokeWidth={1.75} />
-          </IconButton>
-        ) : null}
+        {newButton}
         {onSearch ? (
           <IconButton
             label={`Search (${MOD}K)`}
@@ -2974,12 +2982,12 @@ function CompactRailAction({
 
 function WorkspaceTitleActions({
   onSearch,
-  onNew,
+  newButton,
 }: {
   onSearch?: () => void;
-  onNew?: () => void;
+  newButton?: ReactNode;
 }) {
-  if (!onSearch && !onNew) return null;
+  if (!onSearch && !newButton) return null;
   return (
     <div
       className="flex shrink-0 items-center gap-0.5"
@@ -2990,11 +2998,7 @@ function WorkspaceTitleActions({
           <Search className="size-3.5" strokeWidth={1.75} />
         </IconButton>
       ) : null}
-      {onNew ? (
-        <IconButton label={`New session (${MOD}T)`} onClick={onNew}>
-          <Plus className="size-3.5" strokeWidth={1.75} />
-        </IconButton>
-      ) : null}
+      {newButton}
     </div>
   );
 }

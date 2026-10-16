@@ -13001,7 +13001,8 @@ function Workspace({
               monos={sidebarMonos}
               monoViewActive={monoCovers}
               onNew={onNew}
-              onNewTab={onNewTab}
+              onNewTerminalTab={onNewTerminalTab}
+              onNewProfileTerminal={onNewProfileTerminal}
               openSessions={openProjectSessions}
               onNewTerminal={onNewTerminal}
               onSearch={onOpenSearch}
