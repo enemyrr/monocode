@@ -1505,3 +1505,65 @@ describe("agent app commands", () => {
     ).rejects.toThrow("body is required");
   });
 });
+
+describe("sessions.delegate", () => {
+  it("starts a hidden child linked to the calling turn", async () => {
+    const { source, host } = fixture();
+    host.delegate = vi.fn(async () => {});
+    const result = await handleAgentApp(
+      source,
+      "d1",
+      "sessions.delegate",
+      {
+        prompt: "Review the parser\nThen report back",
+        harness: "codex",
+        worktreeCwd: featureWorktree.path,
+      },
+      host,
+    );
+    expect(host.delegate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Review the parser\nThen report back",
+        harness: "codex",
+        model: "codex:test",
+        sidebarHidden: true,
+        reveal: false,
+        worktreeCwd: featureWorktree.path,
+        delegatedBy: { sessionId: "lead", blockId: "delegation-app-lead-d1" },
+      }),
+      "app-lead-d1",
+      "Review the parser",
+    );
+    expect(host.start).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      id: "app-lead-d1",
+      title: "Review the parser",
+      submitted: true,
+    });
+  });
+
+  it("keeps Monos on sessions.start and rejects unknown fields", async () => {
+    const { source, host } = fixture();
+    host.delegate = vi.fn(async () => {});
+    await expect(
+      handleAgentApp(
+        source,
+        "d2",
+        "sessions.delegate",
+        { prompt: "Review", draft: true },
+        host,
+      ),
+    ).rejects.toThrow("Unknown sessions.delegate fields: draft");
+    host.isMono = () => true;
+    await expect(
+      handleAgentApp(
+        source,
+        "d3",
+        "sessions.delegate",
+        { prompt: "Review" },
+        host,
+      ),
+    ).rejects.toThrow("sessions.start");
+    expect(host.delegate).not.toHaveBeenCalled();
+  });
+});

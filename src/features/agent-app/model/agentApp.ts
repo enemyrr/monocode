@@ -41,6 +41,7 @@ import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
 import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
+import { delegationBlockId } from "../../sessions/model/delegated-sessions";
 import { sessionConversationPage, type SessionReadOptions } from "./sessionConversation";
 import {
   CARD_FIELDS,
@@ -98,6 +99,11 @@ export type AgentAppHost = {
     placement?: AppSessionPlacement,
     notifyMonoId?: string,
   ): Promise<void>;
+  /**
+   * Start a child linked to the calling session's turn. Its result comes
+   * back to that session as a hidden turn when it finishes.
+   */
+  delegate?(launch: QuickLaunch, id: string, title: string): Promise<void>;
   sessions(cwd: string): Promise<AppSessionListing[]>;
   session(id: string): Promise<Session | null>;
   readConversation?(session: Session, options: SessionReadOptions): Promise<ReturnType<typeof sessionConversationPage>>;
@@ -177,6 +183,21 @@ const FIELDS = new Map<string, readonly string[]>([
   ["sessions.stop", ["sessionId", "project"]],
   ["sessions.archive", ["sessionId", "project"]],
   ["sessions.delete", ["sessionId", "project"]],
+  [
+    "sessions.delegate",
+    [
+      "prompt",
+      "title",
+      "harness",
+      "model",
+      "modelSettings",
+      "effort",
+      "runtimeMode",
+      "workspaceMode",
+      "worktreeBase",
+      "worktreeCwd",
+    ],
+  ],
   [
     "sessions.start",
     [
@@ -490,6 +511,26 @@ function startLaunch(
       : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
   };
+}
+
+/** Confirms a requested checkout exists; the project root means no worktree. */
+async function chooseWorktree(launch: QuickLaunch, host: AgentAppHost) {
+  const chosen = (await host.worktrees(launch.cwd)).worktrees.find(
+    (tree) =>
+      !tree.missing && pathKey(tree.path) === pathKey(launch.worktreeCwd!),
+  );
+  if (!chosen)
+    throw new Error(
+      "Worktree is unavailable in this project; run worktrees.list",
+    );
+  launch.worktreeCwd =
+    pathKey(chosen.path) === pathKey(launch.cwd) ? undefined : chosen.path;
+}
+
+/** A row's name: the brief's first line, when the agent gave no title. */
+function delegationTitle(prompt: string): string {
+  const line = prompt.split(/\r?\n/)[0].trim();
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
 function memoryPath(topic: unknown): AgentFilePath {
@@ -1073,21 +1114,7 @@ export async function handleAgentApp(
         );
       const launch = startLaunch(source, input, host);
       const notifyMonoId = completionRecipient(source, input, host, true);
-      if (input.worktreeCwd !== undefined) {
-        const chosen = (await host.worktrees(launch.cwd)).worktrees.find(
-          (tree) =>
-            !tree.missing &&
-            pathKey(tree.path) === pathKey(launch.worktreeCwd!),
-        );
-        if (!chosen)
-          throw new Error(
-            "Worktree is unavailable in this project; run worktrees.list",
-          );
-        launch.worktreeCwd =
-          pathKey(chosen.path) === pathKey(launch.cwd)
-            ? undefined
-            : chosen.path;
-      }
+      if (input.worktreeCwd !== undefined) await chooseWorktree(launch, host);
       const placement = input.placement ?? "tab";
       if (placement !== "tab" && placement !== "right" && placement !== "down")
         throw new Error("placement must be tab, right or down");
@@ -1119,6 +1146,39 @@ export async function handleAgentApp(
         submitted: !launch.draft,
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
+      };
+    }
+    case "sessions.delegate": {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+        throw new Error(
+          "request ID must use letters, digits, underscores or hyphens",
+        );
+      // A Mono's chat has no subagent rows; sessions.start reports to it.
+      if (host.isMono(source.id) || host.isHabitRun?.(source.id))
+        throw new Error(
+          "A Mono uses sessions.start, which reports back when the session stops",
+        );
+      if (!host.delegate) throw new Error("Delegation is unavailable");
+      const id = `app-${source.id}-${requestId}`;
+      const launch: QuickLaunch = {
+        ...startLaunch(source, input, host),
+        sidebarHidden: true,
+        reveal: false,
+        delegatedBy: { sessionId: source.id, blockId: delegationBlockId(id) },
+      };
+      const title =
+        optionalString(input.title, "title", 200) ??
+        delegationTitle(launch.prompt);
+      if (input.worktreeCwd !== undefined) await chooseWorktree(launch, host);
+      await host.delegate(launch, id, title);
+      return {
+        id,
+        title,
+        cwd: launch.cwd,
+        harness: launch.harness,
+        model: launch.model,
+        submitted: true,
+        note: "Its final answer arrives in this conversation as a MonoCode notification once it finishes and you are idle. Do not poll or wait for it; carry on or end your turn.",
       };
     }
     case "worktrees.list":
