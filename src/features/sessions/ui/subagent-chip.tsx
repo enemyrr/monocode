@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { memo, useCallback, useRef, useState, type KeyboardEvent } from "react";
 import {
   Archive,
   Bot,
@@ -6,7 +6,7 @@ import {
   CircleAlert,
   Minus,
 } from "../../../shared/ui/icons";
-import { Popover } from "../../../shared/ui/Popover";
+import { Popover, type PopoverDismissReason } from "../../../shared/ui/Popover";
 import {
   isFinishedSubagent,
   sessionSubagentMeta,
@@ -19,7 +19,7 @@ import { TerminalSpinner } from "./TerminalSpinner";
  * Every delegated run in the session behind one pill, so a run spawned turns
  * ago is one click away instead of a scroll back through the transcript.
  */
-export function SubagentChip({
+export const SubagentChip = memo(function SubagentChip({
   subagents,
   onSelect,
   onArchiveFinished,
@@ -30,6 +30,10 @@ export function SubagentChip({
 }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  const dismiss = useCallback((reason: PopoverDismissReason) => {
+    setOpen(false);
+    if (reason === "escape") trigger.current?.focus();
+  }, []);
   if (subagents.length === 0) return null;
   const running = subagents.some((subagent) => subagent.status === "running");
   const finished = subagents.some(isFinishedSubagent);
@@ -64,7 +68,10 @@ export function SubagentChip({
           align="start"
           width={380}
           maxHeight={360}
-          onDismiss={() => setOpen(false)}
+          autoFocus
+          tabIndex={-1}
+          onDismiss={dismiss}
+          onKeyDown={moveMenuFocus}
           ignore="[data-subagent-chip]"
           role="menu"
           aria-label="Subagents"
@@ -80,7 +87,7 @@ export function SubagentChip({
                   onArchiveFinished();
                   if (!running) setOpen(false);
                 }}
-                className="flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] leading-none text-content/70 hover:bg-content/5 hover:text-content"
+                className="flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] leading-none text-content/70 outline-none hover:bg-content/5 hover:text-content focus-visible:bg-content/5 focus-visible:text-content"
               >
                 <Archive className="size-3.5 shrink-0" strokeWidth={1.75} />
                 Archive finished subagents
@@ -100,7 +107,7 @@ export function SubagentChip({
                   setOpen(false);
                   onSelect(subagent.id);
                 }}
-                className="flex h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-[13px] leading-none hover:bg-content/5"
+                className="flex h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-[13px] leading-none outline-none hover:bg-content/5 focus-visible:bg-content/5"
               >
                 <SubagentStatusIcon status={subagent.status} />
                 <span
@@ -124,6 +131,32 @@ export function SubagentChip({
       ) : null}
     </div>
   );
+});
+
+/** Arrow keys, Home, and End walk the menu's items, wrapping at the ends. */
+function moveMenuFocus(event: KeyboardEvent<HTMLElement>) {
+  const items = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+  );
+  const last = items.length - 1;
+  const at = items.findIndex((item) => item === document.activeElement);
+  const next =
+    event.key === "ArrowDown"
+      ? at >= last
+        ? 0
+        : at + 1
+      : event.key === "ArrowUp"
+        ? at <= 0
+          ? last
+          : at - 1
+        : event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? last
+            : -1;
+  if (next < 0 || last < 0) return;
+  event.preventDefault();
+  items[next].focus();
 }
 
 function SubagentStatusIcon({ status }: { status: SessionSubagent["status"] }) {
