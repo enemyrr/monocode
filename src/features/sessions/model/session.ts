@@ -54,6 +54,21 @@ export type BlockRole =
   | "system"
   | "handoff";
 
+/** The parent turn a `sessions.delegate` child reports back to. */
+export type DelegatedBy = {
+  sessionId: string;
+  /** The parent's subagent row for this child. */
+  blockId: string;
+};
+
+/** A parent's subagent row standing for a session it delegated. */
+export type DelegationMeta = {
+  sessionId: string;
+  harness: HarnessId;
+  /** The child's result reached the parent; it is never handed over twice. */
+  delivered?: boolean;
+};
+
 /** A session created by a Mono during this conversation turn. */
 export type MonoSpawnedSession = {
   sessionId: string;
@@ -359,6 +374,10 @@ export type Block = {
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
+  /** A subagent row backed by a separate MonoCode session. */
+  delegation?: DelegationMeta;
+  /** Persists `Session.delegatedBy` on the child's first user turn. */
+  delegatedBy?: DelegatedBy;
   taskList?: TaskListMeta;
   plan?: PlanBlockMeta;
   orchestration?: OrchestrationProposal;
@@ -448,6 +467,8 @@ export type Session = {
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */
   orchestrationLeadId?: string;
+  /** Started by another session's `sessions.delegate`; reports back to it. */
+  delegatedBy?: DelegatedBy;
   /** Temporary Inbox conversation: shares the runtime, never saved as a session. */
   inboxAsk?: InboxAskContext;
   id: string;
