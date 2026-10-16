@@ -382,6 +382,8 @@ export type Block = {
   delegation?: DelegationMeta;
   /** Persists `Session.delegatedBy` on the child's first user turn. */
   delegatedBy?: DelegatedBy;
+  /** The user stopped this turn before it finished; user blocks only. */
+  stopped?: boolean;
   taskList?: TaskListMeta;
   plan?: PlanBlockMeta;
   orchestration?: OrchestrationProposal;
@@ -764,6 +766,25 @@ export function canReplaceSessionTitle(
 
 export function hasPendingApproval(blocks: Block[]): boolean {
   return blocks.some((block) => block.approval && !block.approval.decided);
+}
+
+/** The user block that opened the latest turn; a mid-turn message joins it. */
+export function latestTurnStart(blocks: readonly Block[]): number {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (block.role === "user" && block.sentAt == null) return index;
+  }
+  return -1;
+}
+
+/** Records a user stop on the latest turn, so it never reads as finished. */
+export function markTurnStopped(session: Session): Session {
+  const start = latestTurnStart(session.blocks);
+  const user = session.blocks[start];
+  if (!user || user.draft || user.stopped) return session;
+  const blocks = session.blocks.slice();
+  blocks[start] = { ...user, stopped: true };
+  return { ...session, blocks };
 }
 
 export function sessionNeedsInput(session: Session): boolean {
