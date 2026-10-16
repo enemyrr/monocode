@@ -21,6 +21,13 @@ import { HarnessEventQueue } from "./model/harnessFlush";
 import { updateSessionState } from "./model/sessionState";
 import { upsertShellRunBlock } from "../features/sessions/model/shell-command";
 import {
+  delegationBlock,
+  missingDelegatedChildren,
+  reconcileDelegations,
+  recordDelegation,
+  type DelegationOutcome,
+} from "../features/sessions/model/delegated-sessions";
+import {
   handleAgentApp,
   canAccessAgentAppProject,
   type AppSessionListing,
@@ -8059,7 +8066,7 @@ function Workspace({
           if (operatorCommand.matched || handAgent) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
             appContext.push(
-              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`,
+              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.${handAgent ? "" : " To run work on another agent (for example Codex or Claude), use sessions.delegate instead of running its CLI in a shell. The child appears as a subagent of this turn, and its final answer comes back to you as a MonoCode notification once it finishes, so do not poll it."}\n</monocode_app>`,
             );
           }
           // A Mono reads who it is ahead of the message, so it never takes it
@@ -8717,6 +8724,9 @@ function Workspace({
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
 
+  const delegationMonitors = useRef(
+    new Map<string, DelegationOutcome | null>(),
+  );
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
   );
@@ -10690,6 +10700,25 @@ function Workspace({
     orchestrator.sync();
   }, [sessions]);
 
+  // Delegated children update their parent's row and, once they answer,
+  // queue the answer as the parent's next turn.
+  const delegationLoads = useRef(new Set<string>());
+  useEffect(() => {
+    const monitors = delegationMonitors.current;
+    for (const [id, outcome] of monitors) {
+      // A later turn the user started is read from the transcript instead.
+      if (outcome && sessions.some((entry) => entry.id === id && entry.busy))
+        monitors.delete(id);
+    }
+    if (reconcileDelegations(sessions, monitors) !== sessions)
+      setSessions((previous) => reconcileDelegations(previous, monitors));
+    for (const id of missingDelegatedChildren(sessions)) {
+      if (delegationLoads.current.has(id)) continue;
+      delegationLoads.current.add(id);
+      void ensureOpenSessionRef.current(id).catch(() => null);
+    }
+  }, [sessions]);
+
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -10807,82 +10836,140 @@ function Workspace({
             ),
           );
         };
+        const recordDelegatedChild = (block: Block) => {
+          const record = (sessions: Session[]) =>
+            sessions.map((session) =>
+              session.id === source.id
+                ? recordDelegation(session, block)
+                : session,
+            );
+          sessionsRef.current = record(sessionsRef.current);
+          setSessions(record);
+        };
+        // The launch's own outcome tells a stopped child from one that
+        // answered; its transcript alone cannot.
+        const monitorDelegation = (sessionId: string) => {
+          delegationMonitors.current.set(sessionId, null);
+          return Object.assign(
+            (outcome: ControlOutcome) => {
+              delegationMonitors.current.set(sessionId, {
+                status: outcome.status,
+                ...(outcome.error ? { error: outcome.error } : {}),
+              });
+              setSessions((previous) =>
+                reconcileDelegations(previous, delegationMonitors.current),
+              );
+            },
+            {
+              accept: () => undefined,
+              discard: () => delegationMonitors.current.delete(sessionId),
+            },
+          );
+        };
+        const startSession = async (
+          launch: QuickLaunch,
+          id: string,
+          placement?: AppSessionPlacement,
+          notifyMonoId?: string,
+          /** Set for sessions.delegate: the parent row's name. */
+          delegationTitle?: string,
+        ) => {
+          const rememberLaunch = () => {
+            const created =
+              sessionsRef.current.find((session) => session.id === id) ??
+              existing;
+            if (delegationTitle) {
+              recordDelegatedChild(
+                delegationBlock({
+                  sessionId: id,
+                  title: delegationTitle,
+                  harness: created?.harness ?? launch.harness,
+                  model:
+                    created?.model ??
+                    resolveModel(launch.harness, launch.model).id,
+                }),
+              );
+              return;
+            }
+            rememberSession({
+              sessionId: id,
+              cwd: created?.cwd ?? launch.cwd,
+              title: created?.title ?? launch.prompt.trim().slice(0, 300),
+              harness: created?.harness ?? launch.harness,
+              model:
+                created?.model ??
+                resolveModel(launch.harness, launch.model).id,
+            });
+          };
+          const open = sessionsRef.current.find(
+            (session) => session.id === id,
+          );
+          const stored = open ? null : await getSession(id);
+          const existing = open ?? stored;
+          const previous = existing?.blocks.find(
+            (block) => block.appRequestId === id,
+          );
+          if (previous) {
+            if (
+              previous.text !== launch.prompt ||
+              (!launch.draft && !!previous.draft)
+            )
+              throw new Error(
+                "Request ID was already used for another session launch",
+              );
+            rememberLaunch();
+            return;
+          }
+          if (
+            existing?.blocks.some(
+              (block) => block.role === "user" && !block.draft,
+            )
+          ) {
+            rememberLaunch();
+            return;
+          }
+          if (existing && sessionDraftBlock(existing))
+            throw new Error("Session ID already has a different draft");
+          const onSettled = notifyMonoId
+            ? monitorCompletion(
+                notifyMonoId,
+                id,
+                id,
+                launch.cwd,
+                launch.prompt,
+              )
+            : delegationTitle
+              ? monitorDelegation(id)
+              : undefined;
+          try {
+            // A Mono's sessions open from its chat, not as workspace
+            // tabs, unless it places one beside an open pane. A
+            // delegated child opens from its parent's subagent row.
+            await launchQuickSessionRef.current(
+              launch,
+              id,
+              placement,
+              onSettled,
+              !launch.delegatedBy &&
+                (!isMonoSession(source.id) || !!placement),
+            );
+            rememberLaunch();
+            onSettled?.accept();
+          } catch (error) {
+            onSettled?.discard();
+            throw error;
+          }
+        };
         const promise = handleAgentApp(
           source,
           payload.requestId,
           payload.action,
           payload.input,
           {
-            start: async (launch, id, placement, notifyMonoId) => {
-              const rememberLaunch = () => {
-                const created =
-                  sessionsRef.current.find((session) => session.id === id) ??
-                  existing;
-                rememberSession({
-                  sessionId: id,
-                  cwd: created?.cwd ?? launch.cwd,
-                  title: created?.title ?? launch.prompt.trim().slice(0, 300),
-                  harness: created?.harness ?? launch.harness,
-                  model:
-                    created?.model ??
-                    resolveModel(launch.harness, launch.model).id,
-                });
-              };
-              const open = sessionsRef.current.find(
-                (session) => session.id === id,
-              );
-              const stored = open ? null : await getSession(id);
-              const existing = open ?? stored;
-              const previous = existing?.blocks.find(
-                (block) => block.appRequestId === id,
-              );
-              if (previous) {
-                if (
-                  previous.text !== launch.prompt ||
-                  (!launch.draft && !!previous.draft)
-                )
-                  throw new Error(
-                    "Request ID was already used for another session launch",
-                  );
-                rememberLaunch();
-                return;
-              }
-              if (
-                existing?.blocks.some(
-                  (block) => block.role === "user" && !block.draft,
-                )
-              ) {
-                rememberLaunch();
-                return;
-              }
-              if (existing && sessionDraftBlock(existing))
-                throw new Error("Session ID already has a different draft");
-              const onSettled = notifyMonoId
-                ? monitorCompletion(
-                    notifyMonoId,
-                    id,
-                    id,
-                    launch.cwd,
-                    launch.prompt,
-                  )
-                : undefined;
-              try {
-                // A Mono's sessions open from its chat, not as workspace
-                // tabs, unless it places one beside an open pane.
-                await launchQuickSessionRef.current(
-                  launch,
-                  id,
-                  placement,
-                  onSettled,
-                  !isMonoSession(source.id) || !!placement,
-                );
-                rememberLaunch();
-                onSettled?.accept();
-              } catch (error) {
-                onSettled?.discard();
-                throw error;
-              }
-            },
+            start: (launch, id, placement, notifyMonoId) =>
+              startSession(launch, id, placement, notifyMonoId),
+            delegate: (launch, id, title) =>
+              startSession(launch, id, undefined, undefined, title),
             sessions: async (cwd): Promise<AppSessionListing[]> => {
               const stored = await listSessionsByProject(cwd);
               const byId = new Map<string, AppSessionListing>();
@@ -12531,6 +12618,8 @@ function Workspace({
     onQueuedMessageEditingChange,
     onSteerQueuedMessage,
     onResumeQueue,
+    onOpenDelegatedSession: (sessionId: string) =>
+      void onSelectHistorySession(sessionId),
     onUsageLimitResume,
     onUsageLimitResumeAtReset,
     onUsageLimitDismiss,

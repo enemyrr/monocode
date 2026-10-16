@@ -273,6 +273,8 @@ type Props = {
   onScrollerChange?: (el: HTMLDivElement | null) => void;
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
+  /** Opens the session behind a `sessions.delegate` subagent row. */
+  onOpenDelegatedSession?: (sessionId: string) => void;
 };
 
 function AgentTranscriptComponent({
@@ -1788,7 +1790,11 @@ export const AgentTranscript = memo(
   function AgentTranscript(props: Props) {
     return (
       <ShellRunSendContext.Provider value={props.onSendShellRun}>
-        <AgentTranscriptComponent {...props} />
+        <DelegatedSessionOpenContext.Provider
+          value={props.onOpenDelegatedSession}
+        >
+          <AgentTranscriptComponent {...props} />
+        </DelegatedSessionOpenContext.Provider>
       </ShellRunSendContext.Provider>
     );
   },
@@ -3886,6 +3892,11 @@ function PhaseStep({
  * A row is a mascot, a name, and what that agent is doing right now. Click it
  * and the agent's own trail opens underneath.
  */
+/** Rows sit deep in the trail, so the opener for a delegated child is shared. */
+const DelegatedSessionOpenContext = createContext<
+  ((sessionId: string) => void) | undefined
+>(undefined);
+
 function SubagentStack({
   blocks,
   cwd,
@@ -4028,7 +4039,11 @@ function SubagentPanel({
   const brief = subagentBrief(block);
   const model = subagentModelName(block);
   const state = toolCallState(block);
-  const active = live && state === "pending";
+  const delegation = block.delegation;
+  const openSession = useContext(DelegatedSessionOpenContext);
+  // A delegated child is a session of its own: it works for as long as it
+  // runs, whether or not the turn that started it is still live.
+  const active = (live || !!delegation) && state === "pending";
   const steps = block.agentRun?.steps ?? [];
   // The run's trail as transcript blocks, so the panel groups it the way the
   // main transcript groups the agent's own work: what it said, then the calls
@@ -4073,6 +4088,29 @@ function SubagentPanel({
     </span>
   );
 
+  const icon = delegation ? (
+    <HarnessIcon
+      harness={delegation.harness}
+      className={`size-3.5 shrink-0 ${
+        state === "rejected" ? "text-red-400" : "text-content/60"
+      }`}
+    />
+  ) : (
+    <SubagentMascot name={name} state={state} active={active} />
+  );
+  const openAction =
+    delegation && openSession ? (
+      <button
+        type="button"
+        aria-label={`Open ${name}`}
+        title="Open session"
+        onClick={() => openSession(delegation.sessionId)}
+        className="shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[12px] text-content/45 transition-colors duration-200 hover:bg-content/8 hover:text-content"
+      >
+        Open
+      </button>
+    ) : null;
+
   // A run that has not reported a step yet has nothing to open into. The row
   // still holds its place, so the chevron arriving does not move anything.
   if (steps.length === 0 && !report) {
@@ -4082,8 +4120,9 @@ function SubagentPanel({
         title={brief}
         className="-mx-1.5 flex min-w-0 items-center gap-2 px-1.5 py-1"
       >
-        <SubagentMascot name={name} state={state} active={active} />
+        {icon}
         {label}
+        {openAction}
         <span className="size-3.5 shrink-0" />
       </div>
     );
@@ -4091,27 +4130,30 @@ function SubagentPanel({
 
   return (
     <div className="flex min-w-0 flex-col">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
-        title={brief}
-        onClick={onToggle}
-        // An open row keeps the wash it lit up under the cursor, so the panel
-        // below reads as hanging off it rather than off the transcript.
-        className={`group -mx-1.5 flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
-          open ? "bg-content/8" : ""
-        }`}
-      >
-        <SubagentMascot name={name} state={state} active={active} />
-        {label}
-        <ChevronRight
-          className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
-            open ? "rotate-90" : ""
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
+          title={brief}
+          onClick={onToggle}
+          // An open row keeps the wash it lit up under the cursor, so the panel
+          // below reads as hanging off it rather than off the transcript.
+          className={`group -mx-1.5 flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
+            open ? "bg-content/8" : ""
           }`}
-          strokeWidth={1.75}
-        />
-      </button>
+        >
+          {icon}
+          {label}
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
+              open ? "rotate-90" : ""
+            }`}
+            strokeWidth={1.75}
+          />
+        </button>
+        {openAction}
+      </div>
       <div className="zen-phase-body" data-open={open}>
         {open ? (
           /*
@@ -4218,6 +4260,7 @@ function agentStepBlock(step: AgentStep): Block {
  * the agent is working, and the count says how far it has got.
  */
 function subagentStatusLine(block: Block, steps: AgentStep[]): string {
+  if (block.delegation) return delegationStatusLine(block);
   if (toolCallState(block) === "rejected") return "failed";
   const tools = steps.filter((step) => step.kind === "tool").length;
   if (tools === 0) return "";
@@ -4229,6 +4272,15 @@ function subagentStatusLine(block: Block, steps: AgentStep[]): string {
   ).length;
   if (!failed) return count;
   return `${count}, ${failed === 1 ? "1 failed" : `${failed} failed`}`;
+}
+
+/** A delegated child reports no steps here, only where its session stands. */
+function delegationStatusLine(block: Block): string {
+  const status = block.tool?.status;
+  if (status === "completed") return "done";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "stopped";
+  return "running";
 }
 
 /** Whether the line that titled a group has more in it than the header shows. */

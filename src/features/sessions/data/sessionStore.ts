@@ -2,6 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
 import {
+  sanitizeDelegatedBy,
+  sanitizeDelegation,
+} from "../model/delegated-sessions";
+import {
   isWeakToolTitle,
   titleFromToolInput,
 } from "../../../integrations/harness/core/preview";
@@ -341,8 +345,13 @@ export function sanitizeSessionForPersist(
     blocks: session.blocks
       .map((block, index) =>
         sanitizeBlock(
-          index === firstUser && session.orchestrationLeadId
-            ? { ...block, orchestrationLeadId: session.orchestrationLeadId }
+          index === firstUser
+            ? {
+                ...block,
+                orchestrationLeadId:
+                  session.orchestrationLeadId ?? block.orchestrationLeadId,
+                delegatedBy: session.delegatedBy ?? block.delegatedBy,
+              }
             : block,
         ),
       )
@@ -940,6 +949,9 @@ function sanitizeBlock(
     isPersistableId(block.orchestrationLeadId)
   )
     next.orchestrationLeadId = block.orchestrationLeadId;
+  const delegatedBy =
+    block.role === "user" ? sanitizeDelegatedBy(block.delegatedBy) : undefined;
+  if (delegatedBy) next.delegatedBy = delegatedBy;
   // Without this the transcript would show the app's orchestration turns as
   // the user's own after a reload.
   if (block.role === "user" && block.internal) next.internal = true;
@@ -963,6 +975,8 @@ function sanitizeBlock(
   }
   const agentRun = sanitizeAgentRun(block.agentRun);
   if (agentRun) next.agentRun = agentRun;
+  const delegation = block.tool ? sanitizeDelegation(block.delegation) : undefined;
+  if (delegation) next.delegation = delegation;
   const taskList = sanitizeTaskList(block.taskList);
   if (taskList) next.taskList = taskList;
   else if (block.role === "tasks") return null;
@@ -1427,6 +1441,7 @@ function recordToSession(record: SessionRecord): Session {
     : [];
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
   const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
+  const delegatedBy = blocks.find((block) => block.delegatedBy)?.delegatedBy;
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
@@ -1452,6 +1467,7 @@ function recordToSession(record: SessionRecord): Session {
         (block) =>
           block.orchestrationLeadId && block.orchestrationLeadId !== record.id,
       )?.orchestrationLeadId,
+    ...(delegatedBy ? { delegatedBy } : {}),
     ...(record.providerSessionId
       ? { providerSessionId: record.providerSessionId }
       : {}),
