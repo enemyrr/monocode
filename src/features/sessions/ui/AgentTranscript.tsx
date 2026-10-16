@@ -18,9 +18,11 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import {
+  createContext,
   memo,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -50,6 +52,12 @@ import { ArtifactCard } from "../../artifacts/ui/ArtifactCard";
 import { artifactCards } from "../../artifacts/artifacts";
 
 import { TerminalSpinner } from "./TerminalSpinner";
+import { SubagentChip } from "./subagent-chip";
+import {
+  archiveFinishedSubagents,
+  collectSessionSubagents,
+  unarchivedSubagents,
+} from "../model/session-subagents";
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
@@ -962,6 +970,44 @@ function AgentTranscriptComponent({
     onNavigateReady?.(navigateToBlock);
   }, [navigateToBlock, onNavigateReady]);
 
+  // A Mono's turns keep their process in the sidebar, so it has no chip.
+  const sessionSubagents = useMemo(
+    () => (inlineWork ? [] : collectSessionSubagents(blocks, { live: !!busy })),
+    [blocks, busy, inlineWork],
+  );
+  const [archivedSubagents, setArchivedSubagents] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const chipSubagents = useMemo(
+    () => unarchivedSubagents(sessionSubagents, archivedSubagents),
+    [sessionSubagents, archivedSubagents],
+  );
+  const [subagentFocus, setSubagentFocus] = useState<string | null>(null);
+  const subagentFocusValue = useMemo(
+    () =>
+      subagentFocus
+        ? { id: subagentFocus, consume: () => setSubagentFocus(null) }
+        : null,
+    [subagentFocus],
+  );
+  const focusSubagent = useCallback(
+    (blockId: string) => {
+      const turn = turnsRef.current.find((item) =>
+        item.some((block) => block.id === blockId),
+      );
+      if (!turn || !revealBlock(blockId)) return;
+      const turnId = turn[0].id;
+      // Unpins the transcript from the bottom, as a search jump does.
+      scroller.current?.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+      // The row opens and scrolls itself in once it renders.
+      setOpenWork((current) =>
+        current[turnId] ? current : { ...current, [turnId]: true },
+      );
+      setSubagentFocus(blockId);
+    },
+    [revealBlock],
+  );
+
   useEffect(() => {
     const el = scroller.current;
     const owner = highlightOwner.current;
@@ -1016,7 +1062,10 @@ function AgentTranscriptComponent({
       ref={setScroller}
       className={`agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5${bottomAligned ? " mono-transcript-fades scrollbar-none" : ""}`}
     >
-      <TranscriptContent bottomAligned={bottomAligned}>
+      <TranscriptContent
+        bottomAligned={bottomAligned}
+        subagentFocus={subagentFocusValue}
+      >
         {onReturnToLatest ? (
           <div className="flex justify-center px-4 py-2">
             <button
@@ -1590,6 +1639,17 @@ function AgentTranscriptComponent({
                   ))}
                 </div>
               ) : null}
+              {isLastTurn && !parked ? (
+                <SubagentChip
+                  subagents={chipSubagents}
+                  onSelect={focusSubagent}
+                  onArchiveFinished={() =>
+                    setArchivedSubagents((archived) =>
+                      archiveFinishedSubagents(sessionSubagents, archived),
+                    )
+                  }
+                />
+              ) : null}
               {/* The accessory keeps the pane's props, which go stale once parked. */}
               {isLastTurn && latestTurnAccessory && !parked
                 ? latestTurnAccessory
@@ -1661,11 +1721,18 @@ function AgentTranscriptComponent({
 
 function TranscriptContent({
   bottomAligned,
+  subagentFocus,
   children,
 }: {
   bottomAligned: boolean;
+  subagentFocus: SubagentFocus | null;
   children: ReactNode;
 }) {
+  const content = (
+    <SubagentFocusContext.Provider value={subagentFocus}>
+      {children}
+    </SubagentFocusContext.Provider>
+  );
   // The clip keeps the follow motion's in-flight offset out of scrollHeight.
   if (!bottomAligned) {
     return (
@@ -1674,7 +1741,7 @@ function TranscriptContent({
           data-transcript-content
           className="flex min-w-0 flex-col gap-1 pb-8"
         >
-          {children}
+          {content}
         </div>
       </div>
     );
@@ -1685,7 +1752,7 @@ function TranscriptContent({
         data-transcript-content
         className="flex min-w-0 shrink-0 flex-col gap-1"
       >
-        {children}
+        {content}
       </div>
     </div>
   );
@@ -3541,7 +3608,16 @@ function ActivityPhaseGroup({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
-  const [override, setOverride] = useState<boolean | null>(null);
+  const focus = useContext(SubagentFocusContext);
+  const focused = !!focus && phase.steps.some((step) => step.id === focus.id);
+  const [override, setOverride] = useState<boolean | null>(
+    focused ? true : null,
+  );
+  const [seenFocus, setSeenFocus] = useState(focus);
+  if (seenFocus !== focus) {
+    setSeenFocus(focus);
+    if (focused) setOverride(true);
+  }
   const waiting = phase.steps.some(needsApproval);
   const open = waiting || (override ?? active);
   const [liveScroller, setLiveScroller] = useState<HTMLDivElement | null>(null);
@@ -3835,20 +3911,45 @@ function SubagentRow({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
-  const [override, setOverride] = useState<boolean | null>(null);
+  const focus = useContext(SubagentFocusContext);
+  const focused = focus?.id === block.id;
+  const [override, setOverride] = useState<boolean | null>(
+    focused ? true : null,
+  );
+  const [seenFocus, setSeenFocus] = useState(focus);
+  if (seenFocus !== focus) {
+    setSeenFocus(focus);
+    if (focused) setOverride(true);
+  }
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focused) return;
+    root.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    focus.consume();
+  }, [focus, focused]);
   const open = override ?? toolCallState(block) === "rejected";
   return (
-    <SubagentPanel
-      block={block}
-      cwd={cwd}
-      live={live}
-      open={open}
-      onToggle={() => setOverride(!open)}
-      onOpenFile={onOpenFile}
-      onOpenDiff={onOpenDiff}
-    />
+    <div ref={root} className="flex min-w-0 flex-col">
+      <SubagentPanel
+        block={block}
+        cwd={cwd}
+        live={live}
+        open={open}
+        onToggle={() => setOverride(!open)}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+      />
+    </div>
   );
 }
+
+/**
+ * The run the subagent chip asked for. The row and the phase that holds it
+ * open on it; the row scrolls itself in and consumes it.
+ */
+type SubagentFocus = { id: string; consume: () => void };
+
+const SubagentFocusContext = createContext<SubagentFocus | null>(null);
 
 /**
  * One delegated run: its name, what it is doing, and — once opened — the trail
