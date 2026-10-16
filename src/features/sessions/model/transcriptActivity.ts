@@ -503,9 +503,11 @@ export function groupTurnItems(
     // is still going. Once the turn settles they are work like any other call
     // — except one that died: a failed run keeps its own row under the fold,
     // where it opens itself onto the reason rather than folding out of sight.
+    // A delegated session outlives the turn that started it, so it keeps its
+    // row too.
     if (
       isSubagentBlock(block) &&
-      (!settled || toolCallState(block) === "rejected")
+      (!settled || toolCallState(block) === "rejected" || !!block.delegation)
     ) {
       flush();
       const last = items[items.length - 1];

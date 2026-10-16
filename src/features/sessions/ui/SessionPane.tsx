@@ -215,6 +215,8 @@ export type SessionPaneProps = {
   onLinkedWorkItemUpdateCardDismiss?: (sessionId: string) => void;
   onNoteCardDismiss?: (sessionId: string) => void;
   onOpenArtifact?: (sessionId: string, id: string) => void;
+  /** Opens a child started by this session's `sessions.delegate`. */
+  onOpenDelegatedSession?: (sessionId: string) => void;
   onHandoffCardDismiss?: (sessionId: string) => void;
   onOpenLinkedWorkItem?: (item: LinkedWorkItem, sessionId: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => Promise<boolean>;
@@ -352,6 +354,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onLinkedWorkItemUpdateCardDismiss,
   onNoteCardDismiss,
   onOpenArtifact,
+  onOpenDelegatedSession,
   onHandoffCardDismiss,
   onOpenLinkedWorkItem,
   onArchiveSession,
@@ -1031,6 +1034,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ? (id) => onOpenArtifact(session.id, id)
                         : undefined
                     }
+                    onOpenDelegatedSession={onOpenDelegatedSession}
                     agentMascot={agent}
                     bottomAligned={!!agent}
                     inlineWork={!!agent}

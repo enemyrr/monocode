@@ -12618,6 +12618,8 @@ function Workspace({
     onQueuedMessageEditingChange,
     onSteerQueuedMessage,
     onResumeQueue,
+    onOpenDelegatedSession: (sessionId: string) =>
+      void onSelectHistorySession(sessionId),
     onUsageLimitResume,
     onUsageLimitResumeAtReset,
     onUsageLimitDismiss,
