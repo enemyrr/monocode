@@ -3,12 +3,13 @@ import {
   delegatedTurnOutcome,
   delegationBlock,
   delegationResidents,
+  MAX_DELEGATION_RESULT_TURNS,
   missingDelegatedChildren,
+  openDelegations,
   reconcileDelegations,
   recordDelegation,
-  type DelegationOutcome,
 } from "./delegated-sessions";
-import type { Block, Session } from "./session";
+import { markTurnStopped, type Block, type Session } from "./session";
 
 function session(
   id: string,
@@ -131,23 +132,99 @@ describe("delegated sessions", () => {
     expect(next.blocks[1].tool?.detail?.length).toBeLessThan(4_010);
   });
 
-  it("trusts the launch's own outcome over the transcript", () => {
-    const pending = new Map<string, DelegationOutcome | null>([
-      ["child", null],
-    ]);
-    const sessions = [parent, finished()];
-    expect(reconcileDelegations(sessions, pending)).toBe(sessions);
-
-    const stopped = new Map([["child", { status: "cancelled" as const }]]);
-    const [next] = reconcileDelegations(sessions, stopped);
+  it("never delivers a turn the user stopped", () => {
+    const stoppedChild = markTurnStopped(finished());
+    expect(delegatedTurnOutcome(stoppedChild)).toEqual({ status: "cancelled" });
+    const [next] = reconcileDelegations([parent, stoppedChild]);
     expect(next.blocks[1].tool?.status).toBe("cancelled");
     expect(next.blocks[1].delegation?.delivered).toBeUndefined();
     expect(next.queuedMessages).toBeUndefined();
+    // Stopped no longer pins either session, and the child stays loadable.
+    expect(delegationResidents([next, stoppedChild]).size).toBe(0);
+    expect(missingDelegatedChildren([next])).toEqual(["child"]);
 
     // A stopped child the user continues reports when that turn answers.
-    const [continued] = reconcileDelegations([next, finished()]);
-    expect(continued.blocks[1].delegation?.delivered).toBe(true);
-    expect(continued.queuedMessages).toHaveLength(1);
+    const continued = session("child", [
+      ...stoppedChild.blocks,
+      { id: "c6", role: "user", text: "Go on", startedAt: 9, durationMs: 1 },
+      { id: "c7", role: "assistant", text: "Finished now." },
+    ]);
+    const [answered] = reconcileDelegations([next, continued]);
+    expect(answered.blocks[1].delegation?.delivered).toBe(true);
+    expect(answered.queuedMessages?.[0].text).toContain("Finished now.");
+  });
+
+  it("shows a child that waits on an approval as needing input", () => {
+    const waiting = {
+      ...running,
+      blocks: [
+        ...running.blocks,
+        {
+          id: "a",
+          role: "approval" as const,
+          text: "Run tests?",
+          approval: { requestId: 1 },
+        },
+      ],
+    };
+    const [next] = reconcileDelegations([parent, waiting]);
+    expect(next.blocks[1].tool?.status).toBe("needs_input");
+    expect(delegationResidents([next, waiting]).size).toBe(2);
+    expect(openDelegations(next)).toHaveLength(1);
+  });
+
+  it("fails a deleted child's row and tells the parent", () => {
+    const sessions = [parent];
+    expect(reconcileDelegations(sessions)).toBe(sessions);
+    const [next] = reconcileDelegations(sessions, new Set(["child"]));
+    expect(next.blocks[1].tool?.status).toBe("failed");
+    expect(next.blocks[1].delegation?.delivered).toBe(true);
+    expect(next.queuedMessages?.[0].monoSessionCompletion?.status).toBe(
+      "failed",
+    );
+    expect(next.queuedMessages?.[0].text).toContain("deleted");
+    expect(delegationResidents([next]).size).toBe(0);
+    expect(missingDelegatedChildren([next])).toEqual([]);
+  });
+
+  it("holds results for the user after a long unattended run", () => {
+    const resultTurn = (index: number): Block => ({
+      id: `r${index}`,
+      role: "user",
+      text: "result",
+      internal: true,
+      appRequestId: `delegation-result-old${index}`,
+    });
+    const turns = Array.from(
+      { length: MAX_DELEGATION_RESULT_TURNS },
+      (_, index) => resultTurn(index),
+    );
+    const looping = {
+      ...parent,
+      busy: false,
+      blocks: [...parent.blocks, ...turns],
+    };
+    const [held] = reconcileDelegations([looping, finished()]);
+    expect(held.queuedMessages).toHaveLength(1);
+    expect(held.queueStatus).toBe("paused");
+
+    const userBetween = {
+      ...looping,
+      blocks: [
+        ...parent.blocks,
+        ...turns,
+        { id: "you", role: "user" as const, text: "keep going" },
+      ],
+    };
+    const [sent] = reconcileDelegations([userBetween, finished()]);
+    expect(sent.queueStatus).toBeUndefined();
+  });
+
+  it("returns the same array when no session delegates", () => {
+    const sessions = [finished(), session("other", [])];
+    expect(reconcileDelegations(sessions)).toBe(sessions);
+    expect(missingDelegatedChildren(sessions)).toEqual([]);
+    expect(delegationResidents(sessions).size).toBe(0);
   });
 
   it("names the sessions that must stay loaded or be loaded", () => {

@@ -1,6 +1,8 @@
 import {
   HARNESSES,
   HARNESS_TITLE,
+  latestTurnStart,
+  sessionNeedsInput,
   type Block,
   type DelegatedBy,
   type DelegationMeta,
@@ -12,21 +14,20 @@ import {
 /** Keeps the report on the parent's row and in its next turn readable. */
 const RESULT_MAX_CHARS = 4_000;
 const ID = /^[A-Za-z0-9_-]{1,512}$/;
+/** Children one session may have working at once. */
+export const MAX_OPEN_DELEGATIONS = 6;
+/** Result turns in a row, with no user turn between, before results wait. */
+export const MAX_DELEGATION_RESULT_TURNS = 10;
+const RESULT_PREFIX = "delegation-result-";
+const DELETED = "The delegated session was deleted before it finished.";
+
+/** Row statuses while the child still owes an answer. */
+const OPEN_STATUSES = new Set(["in_progress", "needs_input"]);
 
 export type DelegationOutcome = {
   status: "completed" | "failed" | "cancelled";
   error?: string;
 };
-
-/**
- * What the app knows about a launch it is still watching: `null` until the
- * turn settles, then its outcome. A child without an entry is read from its
- * transcript, which is all a reload leaves.
- */
-export type MonitoredDelegations = ReadonlyMap<
-  string,
-  DelegationOutcome | null
->;
 
 /** One row per child, so a retried call finds the one it already made. */
 export function delegationBlockId(childId: string): string {
@@ -61,14 +62,42 @@ export function recordDelegation(parent: Session, block: Block): Session {
   return { ...parent, blocks: [...parent.blocks, block] };
 }
 
-/** The user block that opened the latest turn, as the turn timer finds it. */
-function latestTurnStart(blocks: readonly Block[]): number {
-  for (let index = blocks.length - 1; index >= 0; index--) {
-    const block = blocks[index];
-    // A message sent mid-turn joined it rather than starting a new one.
-    if (block.role === "user" && block.sentAt == null) return index;
+function isOpenRow(block: Block): boolean {
+  return (
+    !!block.delegation &&
+    !block.delegation.delivered &&
+    OPEN_STATUSES.has(block.tool?.status ?? "")
+  );
+}
+
+/** Blocks are replaced, never mutated, so the answer holds per array. */
+const undeliveredCache = new WeakMap<Block[], boolean>();
+
+function hasUndelivered(session: Session): boolean {
+  let found = undeliveredCache.get(session.blocks);
+  if (found === undefined) {
+    found = session.blocks.some(
+      (block) => block.delegation && !block.delegation.delivered,
+    );
+    undeliveredCache.set(session.blocks, found);
   }
-  return -1;
+  return found;
+}
+
+/** Every child this session still waits on, running or stopped. */
+export function undeliveredDelegations(session: Session): DelegationMeta[] {
+  if (!hasUndelivered(session)) return [];
+  return session.blocks.flatMap((block) =>
+    block.delegation && !block.delegation.delivered ? [block.delegation] : [],
+  );
+}
+
+/** Children of this session that are still working. */
+export function openDelegations(session: Session): DelegationMeta[] {
+  if (!hasUndelivered(session)) return [];
+  return session.blocks.flatMap((block) =>
+    isOpenRow(block) ? [block.delegation!] : [],
+  );
 }
 
 /**
@@ -80,9 +109,9 @@ export function delegatedTurnOutcome(
   child: Session,
 ): DelegationOutcome | undefined {
   if (child.busy || child.worktreePreparing) return undefined;
-  const start = latestTurnStart(child.blocks);
-  const user = child.blocks[start];
+  const user = child.blocks[latestTurnStart(child.blocks)];
   if (!user || user.draft || user.durationMs == null) return undefined;
+  if (user.stopped) return { status: "cancelled" };
   const last = child.blocks[child.blocks.length - 1];
   if (last?.notice === "error")
     return { status: "failed", ...(last.text ? { error: last.text } : {}) };
@@ -110,7 +139,7 @@ function truncated(text: string): { text: string; truncated: boolean } {
 /** The hidden turn that hands a finished child's result to its parent. */
 export function delegationResultMessage(
   block: Block,
-  child: Session,
+  child: { id: string; harness: HarnessId; model?: string },
   outcome: DelegationOutcome,
   reply: string,
 ): QueuedMessage {
@@ -119,14 +148,14 @@ export function delegationResultMessage(
     sessionId: child.id,
     title: block.text,
     harness: child.harness,
-    model: child.model,
+    ...(child.model ? { model: child.model } : {}),
     status: outcome.status,
     result: result.text,
     ...(result.truncated ? { truncated: true } : {}),
     ...(outcome.error ? { error: outcome.error.slice(0, 2_000) } : {}),
   };
   return {
-    id: `delegation-result-${child.id}`,
+    id: `${RESULT_PREFIX}${child.id}`,
     attachments: [],
     monoSessionCompletion: {
       sessionId: child.id,
@@ -137,57 +166,102 @@ export function delegationResultMessage(
   };
 }
 
-const TOOL_STATUS: Record<DelegationOutcome["status"], string> = {
-  completed: "completed",
-  failed: "failed",
-  cancelled: "cancelled",
+/**
+ * How many delegation results the parent has taken in a row since the user
+ * last wrote. Agents that delegate on every result would otherwise run
+ * unattended without end.
+ */
+function resultTurnsInRow(parent: Session): number {
+  let count = 0;
+  for (let index = parent.blocks.length - 1; index >= 0; index--) {
+    const block = parent.blocks[index];
+    if (block.role !== "user") continue;
+    if (!block.internal || !block.appRequestId?.startsWith(RESULT_PREFIX))
+      break;
+    count++;
+  }
+  return count;
+}
+
+type RowUpdate = {
+  status: string;
+  detail?: string;
+  /** Hand this result to the parent and mark the row delivered. */
+  deliver?: { outcome: DelegationOutcome; reply: string };
 };
+
+function rowUpdate(
+  link: DelegationMeta,
+  child: Session | undefined,
+  gone: ReadonlySet<string>,
+): RowUpdate | undefined {
+  if (!child) {
+    if (!gone.has(link.sessionId)) return undefined;
+    const outcome = { status: "failed" as const, error: DELETED };
+    return {
+      status: "failed",
+      detail: DELETED,
+      deliver: { outcome, reply: "" },
+    };
+  }
+  const outcome = delegatedTurnOutcome(child);
+  if (!outcome)
+    return { status: sessionNeedsInput(child) ? "needs_input" : "in_progress" };
+  const reply = delegatedReply(child);
+  const detail =
+    truncated([outcome.error, reply].filter(Boolean).join("\n\n")).text ||
+    undefined;
+  // A stopped child may still be continued; only a real answer is final.
+  return outcome.status === "cancelled"
+    ? { status: "cancelled", detail }
+    : { status: outcome.status, detail, deliver: { outcome, reply } };
+}
 
 function settleParent(
   parent: Session,
   byId: ReadonlyMap<string, Session>,
-  monitored: MonitoredDelegations,
+  gone: ReadonlySet<string>,
 ): Session {
   let blocks: Block[] | undefined;
   let queued = parent.queuedMessages;
   parent.blocks.forEach((block, index) => {
     const link = block.delegation;
-    const child =
-      link && !link.delivered ? byId.get(link.sessionId) : undefined;
-    if (!link || !child) return;
-    const outcome = monitored.has(child.id)
-      ? (monitored.get(child.id) ?? undefined)
-      : delegatedTurnOutcome(child);
-    const status = outcome ? TOOL_STATUS[outcome.status] : "in_progress";
-    const reply = outcome ? delegatedReply(child) : "";
-    // A cancelled child may still be continued; only a real answer is final.
-    const deliver = !!outcome && outcome.status !== "cancelled";
-    const detail = outcome
-      ? truncated([outcome.error, reply].filter(Boolean).join("\n\n")).text ||
-        undefined
-      : undefined;
+    if (!link || link.delivered) return;
+    const child = byId.get(link.sessionId);
+    const update = rowUpdate(link, child, gone);
     if (
-      block.tool?.status === status &&
-      block.tool.detail === detail &&
-      !deliver
+      !update ||
+      (!update.deliver &&
+        block.tool?.status === update.status &&
+        block.tool.detail === update.detail)
     )
       return;
     blocks ??= parent.blocks.slice();
     blocks[index] = {
       ...block,
-      tool: { ...block.tool, status, detail },
-      ...(deliver ? { delegation: { ...link, delivered: true } } : {}),
+      tool: { ...block.tool, status: update.status, detail: update.detail },
+      ...(update.deliver ? { delegation: { ...link, delivered: true } } : {}),
     };
-    if (!deliver) return;
-    const message = delegationResultMessage(block, child, outcome, reply);
+    if (!update.deliver) return;
+    const message = delegationResultMessage(
+      block,
+      child ?? { id: link.sessionId, harness: link.harness },
+      update.deliver.outcome,
+      update.deliver.reply,
+    );
     if (!queued?.some((entry) => entry.id === message.id))
       queued = [...(queued ?? []), message];
   });
   if (!blocks) return parent;
+  const changedQueue = queued !== parent.queuedMessages;
   return {
     ...parent,
     blocks,
-    ...(queued !== parent.queuedMessages ? { queuedMessages: queued } : {}),
+    ...(changedQueue ? { queuedMessages: queued } : {}),
+    // Results keep arriving, but the user decides whether the loop goes on.
+    ...(changedQueue && resultTurnsInRow(parent) >= MAX_DELEGATION_RESULT_TURNS
+      ? { queueStatus: "paused" as const }
+      : {}),
   };
 }
 
@@ -195,22 +269,19 @@ function settleParent(
  * Brings every open subagent row up to date with its child session and, once
  * the child has answered, marks the row delivered and queues the answer as the
  * parent's next turn in the same update. The queue waits for an idle parent,
- * and the persisted flag keeps a reload or resume from delivering twice.
+ * and the persisted flag keeps a reload or resume from delivering twice. A
+ * child in `gone` could not be loaded: its row fails and the parent hears so.
  */
 export function reconcileDelegations(
   sessions: Session[],
-  monitored: MonitoredDelegations = new Map(),
+  gone: ReadonlySet<string> = new Set(),
 ): Session[] {
+  if (!sessions.some(hasUndelivered)) return sessions;
   const byId = new Map(sessions.map((session) => [session.id, session]));
   let next: Session[] | undefined;
   sessions.forEach((session, index) => {
-    if (
-      !session.blocks.some(
-        (block) => block.delegation && !block.delegation.delivered,
-      )
-    )
-      return;
-    const settled = settleParent(session, byId, monitored);
+    if (!hasUndelivered(session)) return;
+    const settled = settleParent(session, byId, gone);
     if (settled === session) return;
     next ??= sessions.slice();
     next[index] = settled;
@@ -218,22 +289,17 @@ export function reconcileDelegations(
   return next ?? sessions;
 }
 
-function openLinks(sessions: readonly Session[]): DelegationMeta[] {
-  return sessions.flatMap((session) =>
-    session.blocks.flatMap((block) =>
-      block.delegation && !block.delegation.delivered ? [block.delegation] : [],
-    ),
-  );
-}
-
 /** Children whose results are owed to a parent that is open but they are not. */
 export function missingDelegatedChildren(
   sessions: readonly Session[],
 ): string[] {
+  if (!sessions.some(hasUndelivered)) return [];
   const open = new Set(sessions.map((session) => session.id));
-  return openLinks(sessions)
-    .map((link) => link.sessionId)
-    .filter((id) => !open.has(id));
+  return sessions.flatMap((session) =>
+    undeliveredDelegations(session)
+      .map((link) => link.sessionId)
+      .filter((id) => !open.has(id)),
+  );
 }
 
 /**
@@ -243,15 +309,9 @@ export function missingDelegatedChildren(
 export function delegationResidents(sessions: readonly Session[]): Set<string> {
   const ids = new Set<string>();
   for (const session of sessions)
-    for (const block of session.blocks) {
-      if (
-        block.delegation &&
-        !block.delegation.delivered &&
-        block.tool?.status === "in_progress"
-      ) {
-        ids.add(session.id);
-        ids.add(block.delegation.sessionId);
-      }
+    for (const link of openDelegations(session)) {
+      ids.add(session.id);
+      ids.add(link.sessionId);
     }
   return ids;
 }

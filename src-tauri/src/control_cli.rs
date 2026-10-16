@@ -202,7 +202,10 @@ Actions:
                   you are idle. Do not poll it. title, model, effort,
                   modelSettings, runtimeMode and the workspace choice are
                   optional and work as in sessions.start. Not for Monos.
-                  Reuse --request-id on retries.
+                  At most 6 delegated sessions work for one session at once;
+                  a further call fails until one reports back. After 10
+                  results in a row with no user message, results wait for
+                  the user to resume the queue. Reuse --request-id on retries.
   worktrees.list {}  Working copies in this project, with paths and branches.
   worktrees.create {"branch":"feature/name","base":"HEAD","existing":false}
                   Create a worktree on a named new branch from base (a branch

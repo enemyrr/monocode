@@ -13,6 +13,10 @@ import type { Note } from "../../notes";
 import type { Artifact } from "../../artifacts/artifacts";
 import type { Worktree } from "../../source-control/model/worktrees";
 import { handleAgentApp, notePreview, canAccessAgentAppProject, type AgentAppHost } from "./agentApp";
+import {
+  delegationBlock,
+  MAX_OPEN_DELEGATIONS,
+} from "../../sessions/model/delegated-sessions";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex",
@@ -1529,17 +1533,47 @@ describe("sessions.delegate", () => {
         sidebarHidden: true,
         reveal: false,
         worktreeCwd: featureWorktree.path,
-        delegatedBy: { sessionId: "lead", blockId: "delegation-app-lead-d1" },
+        delegatedBy: { sessionId: "lead", blockId: "delegation-del-lead-d1" },
       }),
-      "app-lead-d1",
+      "del-lead-d1",
       "Review the parser",
     );
     expect(host.start).not.toHaveBeenCalled();
     expect(result).toMatchObject({
-      id: "app-lead-d1",
+      id: "del-lead-d1",
       title: "Review the parser",
       submitted: true,
     });
+  });
+
+  it("caps the children working for one session, but not a retry", async () => {
+    const { source, host } = fixture();
+    host.delegate = vi.fn(async () => {});
+    source.blocks = Array.from({ length: MAX_OPEN_DELEGATIONS }, (_, index) =>
+      delegationBlock({
+        sessionId: `del-lead-r${index}`,
+        title: "Work",
+        harness: "codex",
+        model: "codex:test",
+      }),
+    );
+    await expect(
+      handleAgentApp(
+        source,
+        "one-more",
+        "sessions.delegate",
+        { prompt: "Review" },
+        host,
+      ),
+    ).rejects.toThrow(`${MAX_OPEN_DELEGATIONS} delegated sessions`);
+    await handleAgentApp(
+      source,
+      "r0",
+      "sessions.delegate",
+      { prompt: "Review" },
+      host,
+    );
+    expect(host.delegate).toHaveBeenCalledTimes(1);
   });
 
   it("keeps Monos on sessions.start and rejects unknown fields", async () => {

@@ -41,7 +41,11 @@ import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
 import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
-import { delegationBlockId } from "../../sessions/model/delegated-sessions";
+import {
+  delegationBlockId,
+  MAX_OPEN_DELEGATIONS,
+  openDelegations,
+} from "../../sessions/model/delegated-sessions";
 import { sessionConversationPage, type SessionReadOptions } from "./sessionConversation";
 import {
   CARD_FIELDS,
@@ -1159,7 +1163,15 @@ export async function handleAgentApp(
           "A Mono uses sessions.start, which reports back when the session stops",
         );
       if (!host.delegate) throw new Error("Delegation is unavailable");
-      const id = `app-${source.id}-${requestId}`;
+      // Its own prefix, so a delegate can never land on a sessions.start ID.
+      const id = `del-${source.id}-${requestId}`;
+      const retry = source.blocks.some(
+        (block) => block.id === delegationBlockId(id),
+      );
+      if (!retry && openDelegations(source).length >= MAX_OPEN_DELEGATIONS)
+        throw new Error(
+          `${MAX_OPEN_DELEGATIONS} delegated sessions are already working for this session. Wait for one to report back before delegating more.`,
+        );
       const launch: QuickLaunch = {
         ...startLaunch(source, input, host),
         sidebarHidden: true,

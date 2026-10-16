@@ -23,9 +23,10 @@ import { upsertShellRunBlock } from "../features/sessions/model/shell-command";
 import {
   delegationBlock,
   missingDelegatedChildren,
+  openDelegations,
+  undeliveredDelegations,
   reconcileDelegations,
   recordDelegation,
-  type DelegationOutcome,
 } from "../features/sessions/model/delegated-sessions";
 import {
   handleAgentApp,
@@ -464,6 +465,7 @@ import {
   formatSessionTitle,
   sessionNeedsInput,
   newDefaultSession,
+  markTurnStopped,
   newSession,
   retargetSessionToProject,
   removeSessionDraft,
@@ -5314,6 +5316,36 @@ function Workspace({
     ],
   );
 
+  // Stops a parent's working children and lists them in the sidebar again.
+  const releaseDelegatedChildren = useCallback(
+    async (parent: Session) => {
+      const working = new Set(
+        openDelegations(parent).map((link) => link.sessionId),
+      );
+      await Promise.all(
+        undeliveredDelegations(parent).map(async ({ sessionId: id }) => {
+          const child = await ensureOpenSession(id).catch(() => null);
+          if (!child) return;
+          if (working.has(id) && child.busy)
+            await Promise.resolve(stopSessionRef.current(id)).catch(
+              () => undefined,
+            );
+          const reveal = (sessions: Session[]) =>
+            sessions.map((session) =>
+              session.id === id
+                ? { ...session, sidebarHidden: undefined }
+                : session,
+            );
+          sessionsRef.current = reveal(sessionsRef.current);
+          setSessions(reveal);
+          const current = sessionsRef.current.find((s) => s.id === id);
+          if (current) persistSession(current);
+        }),
+      );
+    },
+    [ensureOpenSession, persistSession],
+  );
+
   const onRemoveHistorySession = useCallback(
     async (
       sessionId: string,
@@ -5374,6 +5406,9 @@ function Workspace({
           if (choice.deleteWorktree) deleteWorktreePath = unusedWorktree;
         }
       }
+      // Its hidden children would keep working with no one to report to.
+      const parent = open ?? (await getSession(sessionId).catch(() => null));
+      if (parent) await releaseDelegatedChildren(parent);
       invalidateLoadedSession(sessionId);
       pendingPersist.current.delete(sessionId);
       try {
@@ -5539,6 +5574,7 @@ function Workspace({
       history,
       invalidateLoadedSession,
       refreshHistory,
+      releaseDelegatedChildren,
       sidebarCwd,
       stopSessionForRemoval,
       tabCloseScope,
@@ -8273,6 +8309,15 @@ function Workspace({
         .finally(() => {
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
+          // A turn cut short without onStop, for example by a removal.
+          if (turnGen.current.get(sessionId) !== gen)
+            setSessions((prev) =>
+              prev.map((session) =>
+                session.id === sessionId && !session.busy
+                  ? markTurnStopped(session)
+                  : session,
+              ),
+            );
           options?.onSettled?.(
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
@@ -8724,9 +8769,6 @@ function Workspace({
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
 
-  const delegationMonitors = useRef(
-    new Map<string, DelegationOutcome | null>(),
-  );
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
   );
@@ -10162,12 +10204,16 @@ function Workspace({
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
-          const stopped = stopStreaming(s);
+          // Marked on the turn itself, so a stop never reads as an answer.
+          const stopped = stopStreaming(s.busy ? markTurnStopped(s) : s);
           const completed = isPreparingHandoff(stopped)
             ? completeHandoff(stopped, buildDeterministicHandoff(stopped))
             : stopped;
           const ready = { ...completed, worktreePreparing: undefined };
-          return ready.queuedMessages?.length
+          // App notifications are not the user's to hold back after a stop.
+          return ready.queuedMessages?.some(
+            (message) => !message.monoSessionCompletion,
+          )
             ? { ...ready, queueStatus: "paused" }
             : ready;
         }),
@@ -10703,19 +10749,26 @@ function Workspace({
   // Delegated children update their parent's row and, once they answer,
   // queue the answer as the parent's next turn.
   const delegationLoads = useRef(new Set<string>());
+  // Children that could not be loaded, so their rows fail rather than wait.
+  const goneDelegations = useRef(new Set<string>());
   useEffect(() => {
-    const monitors = delegationMonitors.current;
-    for (const [id, outcome] of monitors) {
-      // A later turn the user started is read from the transcript instead.
-      if (outcome && sessions.some((entry) => entry.id === id && entry.busy))
-        monitors.delete(id);
-    }
-    if (reconcileDelegations(sessions, monitors) !== sessions)
-      setSessions((previous) => reconcileDelegations(previous, monitors));
+    const gone = goneDelegations.current;
+    if (reconcileDelegations(sessions, gone) !== sessions)
+      setSessions((previous) => reconcileDelegations(previous, gone));
+    // One that is open again may be tried again once it next goes missing.
+    for (const id of delegationLoads.current)
+      if (sessions.some((session) => session.id === id))
+        delegationLoads.current.delete(id);
     for (const id of missingDelegatedChildren(sessions)) {
-      if (delegationLoads.current.has(id)) continue;
+      if (delegationLoads.current.has(id) || gone.has(id)) continue;
       delegationLoads.current.add(id);
-      void ensureOpenSessionRef.current(id).catch(() => null);
+      void ensureOpenSessionRef.current(id)
+        .catch(() => null)
+        .then((child) => {
+          if (child) return;
+          gone.add(id);
+          setSessions((previous) => reconcileDelegations(previous, gone));
+        });
     }
   }, [sessions]);
 
@@ -10846,26 +10899,6 @@ function Workspace({
           sessionsRef.current = record(sessionsRef.current);
           setSessions(record);
         };
-        // The launch's own outcome tells a stopped child from one that
-        // answered; its transcript alone cannot.
-        const monitorDelegation = (sessionId: string) => {
-          delegationMonitors.current.set(sessionId, null);
-          return Object.assign(
-            (outcome: ControlOutcome) => {
-              delegationMonitors.current.set(sessionId, {
-                status: outcome.status,
-                ...(outcome.error ? { error: outcome.error } : {}),
-              });
-              setSessions((previous) =>
-                reconcileDelegations(previous, delegationMonitors.current),
-              );
-            },
-            {
-              accept: () => undefined,
-              discard: () => delegationMonitors.current.delete(sessionId),
-            },
-          );
-        };
         const startSession = async (
           launch: QuickLaunch,
           id: string,
@@ -10906,6 +10939,15 @@ function Workspace({
           );
           const stored = open ? null : await getSession(id);
           const existing = open ?? stored;
+          // A retried delegate may only find the child this parent made.
+          if (
+            delegationTitle &&
+            existing &&
+            existing.delegatedBy?.sessionId !== source.id
+          )
+            throw new Error(
+              "Request ID was already used for another session launch",
+            );
           const previous = existing?.blocks.find(
             (block) => block.appRequestId === id,
           );
@@ -10938,9 +10980,7 @@ function Workspace({
                 launch.cwd,
                 launch.prompt,
               )
-            : delegationTitle
-              ? monitorDelegation(id)
-              : undefined;
+            : undefined;
           try {
             // A Mono's sessions open from its chat, not as workspace
             // tabs, unless it places one beside an open pane. A
