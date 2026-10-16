@@ -166,11 +166,19 @@ function SubagentStatusIcon({ status }: { status: SessionSubagent["status"] }) {
     );
   }
   const Icon =
-    status === "failed" ? CircleAlert : status === "stopped" ? Minus : Check;
+    status === "failed" || status === "input"
+      ? CircleAlert
+      : status === "stopped"
+        ? Minus
+        : Check;
   return (
     <Icon
       className={`size-3.5 shrink-0 ${
-        status === "failed" ? "text-red-400" : "text-content/45"
+        status === "failed"
+          ? "text-red-400"
+          : status === "input"
+            ? "text-amber-400"
+            : "text-content/45"
       }`}
       strokeWidth={1.75}
     />

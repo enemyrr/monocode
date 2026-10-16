@@ -163,3 +163,43 @@ describe("archiving", () => {
     ).toEqual(["done", "failed", "running"]);
   });
 });
+
+describe("delegated sessions in the chip", () => {
+  const delegated = (id: string, status: string): Block =>
+    run(id, status, {
+      delegation: { sessionId: `child-${id}`, harness: "codex" },
+    });
+
+  it("reads status from the row and the harness from the child", () => {
+    const turn = [
+      user("u1", "claude"),
+      delegated("working", "in_progress"),
+      delegated("waiting", "needs_input"),
+      delegated("done", "completed"),
+      delegated("failed", "failed"),
+      delegated("stopped", "cancelled"),
+    ];
+    // A settled parent turn does not stop a child that is still working.
+    for (const live of [false, true]) {
+      const runs = turnSubagents(turn, { live });
+      expect(runs.map((entry) => [entry.id, entry.status])).toEqual([
+        ["working", "running"],
+        ["waiting", "input"],
+        ["done", "done"],
+        ["failed", "failed"],
+        ["stopped", "stopped"],
+      ]);
+      expect(runs.every((entry) => entry.harness === "codex")).toBe(true);
+    }
+  });
+
+  it("never archives a child that waits on input", () => {
+    const [waiting] = turnSubagents([delegated("waiting", "needs_input")]);
+    expect(
+      unarchivedSubagents(
+        [waiting],
+        archiveFinishedSubagents([waiting], new Set()),
+      ),
+    ).toEqual([waiting]);
+  });
+});

@@ -9,9 +9,11 @@ import {
 
 /**
  * "stopped" is a run cancelled on relaunch, or one still marked pending in a
- * turn that is no longer working.
+ * turn that is no longer working. "input" is a delegated session waiting on
+ * an approval or a question.
  */
-export type SessionSubagentStatus = "running" | "done" | "failed" | "stopped";
+export type SessionSubagentStatus =
+  "running" | "input" | "done" | "failed" | "stopped";
 
 /**
  * One delegated run in a session, whoever spawned it. Today every entry is a
@@ -48,10 +50,12 @@ export function turnSubagents(
     const model = subagentModelName(block);
     const effort = block.agentRun?.effort?.trim();
     const tokens = block.agentRun?.tokens;
+    // A delegated session runs on its own harness, not the parent's.
+    const runHarness = block.delegation?.harness ?? harness;
     subagents.push({
       id: block.id,
       title: subagentName(block),
-      ...(harness ? { harness } : {}),
+      ...(runHarness ? { harness: runHarness } : {}),
       ...(subagentType
         ? { subagentType: formatSubagentType(subagentType) }
         : {}),
@@ -65,12 +69,22 @@ export function turnSubagents(
 }
 
 function subagentStatus(block: Block, live: boolean): SessionSubagentStatus {
+  // A delegated session outlives its turn; its row carries its own state.
+  if (block.delegation) return delegatedStatus(block.tool?.status);
   // A relaunch cancels the work it found open; that run did not fail.
   if (/^cancell?ed$/i.test(block.tool?.status ?? "")) return "stopped";
   const state = toolCallState(block);
   if (state === "rejected") return "failed";
   if (state === "pending") return live ? "running" : "stopped";
   return "done";
+}
+
+function delegatedStatus(status?: string): SessionSubagentStatus {
+  if (status === "completed") return "done";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "stopped";
+  if (status === "needs_input") return "input";
+  return "running";
 }
 
 /**
@@ -130,7 +144,7 @@ function formatEffort(effort: string): string {
 }
 
 export function isFinishedSubagent(subagent: SessionSubagent): boolean {
-  return subagent.status !== "running";
+  return subagent.status !== "running" && subagent.status !== "input";
 }
 
 /** "Explore · Opus 4.7 · High · 106K tokens", from whatever is known. */

@@ -50,4 +50,25 @@ describe("a delegated subagent row", () => {
     expect(markup).toContain('aria-label="Show Review the parser&#x27;s work"');
     expect(markup).toContain('aria-label="Open Review the parser"');
   });
+
+  it("points a child that waits on input at its session", () => {
+    const markup = render({
+      ...row,
+      tool: { ...row.tool, status: "needs_input" },
+    });
+    expect(markup).toContain("needs input");
+    expect(markup).toContain("Open to answer");
+    expect(markup).not.toContain("<span>running</span>");
+  });
+
+  it("does not show a stopped child as failed", () => {
+    const markup = render({
+      ...row,
+      tool: { ...row.tool, status: "cancelled", detail: "Partial notes." },
+    });
+    expect(markup).toContain("stopped");
+    expect(markup).not.toContain("text-red-400");
+    // A failure opens itself; a stop stays closed.
+    expect(markup).not.toContain("Partial notes.");
+  });
 });

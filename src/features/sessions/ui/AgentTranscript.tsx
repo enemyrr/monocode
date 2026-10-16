@@ -3957,7 +3957,7 @@ function SubagentRow({
     setWasFocused(focused);
     if (focused) setOverride(true);
   }
-  const open = override ?? toolCallState(block) === "rejected";
+  const open = override ?? subagentFailed(block);
   return (
     <div data-subagent-id={block.id} className="flex min-w-0 flex-col">
       <SubagentPanel
@@ -4041,9 +4041,13 @@ function SubagentPanel({
   const state = toolCallState(block);
   const delegation = block.delegation;
   const openSession = useContext(DelegatedSessionOpenContext);
+  // A child waiting on an approval or a question is not working; it waits on
+  // the reader, who answers it in its own session.
+  const needsInput = !!delegation && block.tool?.status === "needs_input";
   // A delegated child is a session of its own: it works for as long as it
   // runs, whether or not the turn that started it is still live.
-  const active = (live || !!delegation) && state === "pending";
+  const active =
+    (live || !!delegation) && state === "pending" && !needsInput;
   const steps = block.agentRun?.steps ?? [];
   // The run's trail as transcript blocks, so the panel groups it the way the
   // main transcript groups the agent's own work: what it said, then the calls
@@ -4051,7 +4055,7 @@ function SubagentPanel({
   const stepBlocks = useMemo(() => steps.map(agentStepBlock), [steps]);
   const status = subagentStatusLine(block, steps);
   const report = subagentReport(block);
-  const failed = state === "rejected";
+  const failed = subagentFailed(block);
 
   // The name takes the room it needs and gives the rest back: a provider that
   // names a run with its whole brief must not push the row off the pane.
@@ -4067,9 +4071,7 @@ function SubagentPanel({
       ) : (
         <span
           className={`min-w-0 flex-1 truncate font-sans text-sm transition-colors duration-200 ${
-            state === "rejected"
-              ? "text-red-400"
-              : "text-content/75 group-hover:text-content"
+            failed ? "text-red-400" : "text-content/75 group-hover:text-content"
           }`}
         >
           {name}
@@ -4082,7 +4084,11 @@ function SubagentPanel({
               {model}
             </span>
           ) : null}
-          {status ? <span className="shrink-0">{status}</span> : null}
+          {status ? (
+            <span className={`shrink-0 ${needsInput ? "text-amber-400" : ""}`}>
+              {status}
+            </span>
+          ) : null}
         </span>
       ) : null}
     </span>
@@ -4092,7 +4098,7 @@ function SubagentPanel({
     <HarnessIcon
       harness={delegation.harness}
       className={`size-3.5 shrink-0 ${
-        state === "rejected" ? "text-red-400" : "text-content/60"
+        failed ? "text-red-400" : "text-content/60"
       }`}
     />
   ) : (
@@ -4103,11 +4109,13 @@ function SubagentPanel({
       <button
         type="button"
         aria-label={`Open ${name}`}
-        title="Open session"
+        title={needsInput ? "Open the session to answer it" : "Open session"}
         onClick={() => openSession(delegation.sessionId)}
-        className="shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[12px] text-content/45 transition-colors duration-200 hover:bg-content/8 hover:text-content"
+        className={`shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[12px] transition-colors duration-200 hover:bg-content/8 hover:text-content ${
+          needsInput ? "text-amber-400" : "text-content/45"
+        }`}
       >
-        Open
+        {needsInput ? "Open to answer" : "Open"}
       </button>
     ) : null;
 
@@ -4280,7 +4288,15 @@ function delegationStatusLine(block: Block): string {
   if (status === "completed") return "done";
   if (status === "failed") return "failed";
   if (status === "cancelled") return "stopped";
+  if (status === "needs_input") return "needs input";
   return "running";
+}
+
+/** A stopped delegated child did not fail; only its own failure is red. */
+function subagentFailed(block: Block): boolean {
+  return block.delegation
+    ? block.tool?.status === "failed"
+    : toolCallState(block) === "rejected";
 }
 
 /** Whether the line that titled a group has more in it than the header shows. */
