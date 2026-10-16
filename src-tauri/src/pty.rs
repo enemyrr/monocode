@@ -125,6 +125,7 @@ impl Drop for PtyHost {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn pty_spawn(
     app: AppHandle,
     host: State<PtyHost>,
@@ -132,8 +133,11 @@ pub fn pty_spawn(
     cwd: String,
     cols: u16,
     rows: u16,
+    command: Option<String>,
+    args: Option<Vec<String>>,
 ) -> Result<(), String> {
     let workdir = working_dir(&cwd);
+    let launch = launch_command(command.as_deref(), args.as_deref().unwrap_or_default());
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     if let Some(prev) = host.remove(&id) {
         terminate(prev.pid);
@@ -143,17 +147,17 @@ pub fn pty_spawn(
 
     #[cfg(unix)]
     {
-        spawn_unix(app, host, id, workdir, cols.max(2), rows.max(2))
+        spawn_unix(app, host, id, workdir, launch, cols.max(2), rows.max(2))
     }
 
     #[cfg(windows)]
     {
-        spawn_windows(app, host, id, workdir, cols.max(2), rows.max(2))
+        spawn_windows(app, host, id, workdir, launch, cols.max(2), rows.max(2))
     }
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (app, cwd, cols, rows);
+        let _ = (app, cwd, cols, rows, launch);
         Err("Terminals are not supported on this platform.".into())
     }
 }
@@ -247,6 +251,7 @@ fn spawn_unix(
     host: State<PtyHost>,
     id: String,
     workdir: std::path::PathBuf,
+    (shell, args): (String, Vec<String>),
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
@@ -255,7 +260,6 @@ fn spawn_unix(
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 
-    let (shell, args) = default_shell();
     let (master, slave) = open_pty(cols, rows)?;
 
     let mut cmd = Command::new(&shell);
@@ -273,6 +277,9 @@ fn spawn_unix(
         cmd.env("HOME", &home);
     }
     cmd.env("PWD", &workdir);
+    for var in crate::harness::AGENT_SESSION_VARS {
+        cmd.env_remove(var);
+    }
 
     // setsid() already creates a new session and process group. Calling
     // process_group(0) first makes the child a group leader, so setsid()
@@ -376,12 +383,12 @@ fn spawn_windows(
     host: State<PtyHost>,
     id: String,
     workdir: std::path::PathBuf,
+    (shell, args): (String, Vec<String>),
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-    let (shell, args) = default_shell();
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -405,6 +412,9 @@ fn spawn_windows(
         cmd.env("USERPROFILE", &home);
     }
     cmd.env("PWD", workdir.to_string_lossy().as_ref());
+    for var in crate::harness::AGENT_SESSION_VARS {
+        cmd.env_remove(var);
+    }
 
     let mut child = crate::windows::spawn_pty(pair.slave.as_ref(), cmd)
         .map_err(|err| format!("Failed to start {shell}: {err}"))?;
@@ -499,13 +509,68 @@ fn default_shell() -> (String, Vec<String>) {
     }
 }
 
+/// The program and argv for a PTY: the login shell, or `command` run through it.
+fn launch_command(command: Option<&str>, args: &[String]) -> (String, Vec<String>) {
+    let (shell, shell_args) = default_shell();
+    match command.map(str::trim).filter(|command| !command.is_empty()) {
+        Some(command) => cli_launch(shell, shell_args, command, args),
+        None => (shell, shell_args),
+    }
+}
+
+/// Runs `command` through an interactive login shell so rc-file PATH entries
+/// apply. The command and its args stay positional, never part of the script.
 #[cfg(not(windows))]
-fn login_args(shell: &str) -> &'static [&'static str] {
-    match std::path::Path::new(shell)
+fn cli_launch(
+    shell: String,
+    login: Vec<String>,
+    command: &str,
+    args: &[String],
+) -> (String, Vec<String>) {
+    let fish = shell_stem(&shell) == "fish";
+    let (shell, mut argv) = if login.is_empty() {
+        ("/bin/sh".to_string(), Vec::new())
+    } else {
+        (shell, vec!["-l".to_string(), "-i".to_string()])
+    };
+    let script = if fish {
+        "exec $argv"
+    } else {
+        r#"exec "$0" "$@""#
+    };
+    argv.extend(["-c".to_string(), script.to_string(), command.to_string()]);
+    argv.extend(args.iter().cloned());
+    (shell, argv)
+}
+
+#[cfg(windows)]
+fn cli_launch(
+    shell: String,
+    _login: Vec<String>,
+    command: &str,
+    args: &[String],
+) -> (String, Vec<String>) {
+    // npm installs CLIs as `.cmd` shims, which only cmd.exe resolves.
+    let shell = if shell_stem(&shell).eq_ignore_ascii_case("cmd") {
+        shell
+    } else {
+        "cmd.exe".to_string()
+    };
+    let mut argv = vec!["/d".to_string(), "/c".to_string(), command.to_string()];
+    argv.extend(args.iter().cloned());
+    (shell, argv)
+}
+
+fn shell_stem(shell: &str) -> &str {
+    std::path::Path::new(shell)
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(shell)
-    {
+}
+
+#[cfg(not(windows))]
+fn login_args(shell: &str) -> &'static [&'static str] {
+    match shell_stem(shell) {
         "zsh" | "bash" | "sh" | "fish" => &["-l"],
         _ => &[],
     }
@@ -829,6 +894,43 @@ mod tests {
         assert_eq!(login_args("/bin/bash"), &["-l"]);
         assert_eq!(login_args("/usr/bin/fish"), &["-l"]);
         assert_eq!(login_args("/usr/local/bin/nu"), &[] as &[&str]);
+    }
+
+    #[test]
+    fn cli_launch_keeps_command_and_args_positional() {
+        let args = vec!["--model".to_string(), "a b; rm -rf ~".to_string()];
+        let (shell, argv) = cli_launch("/bin/zsh".into(), vec!["-l".into()], "claude", &args);
+        assert_eq!(shell, "/bin/zsh");
+        assert_eq!(
+            argv,
+            [
+                "-l",
+                "-i",
+                "-c",
+                r#"exec "$0" "$@""#,
+                "claude",
+                "--model",
+                "a b; rm -rf ~"
+            ]
+        );
+
+        let (_, fish) = cli_launch("/usr/bin/fish".into(), vec!["-l".into()], "codex", &[]);
+        assert_eq!(fish, ["-l", "-i", "-c", "exec $argv", "codex"]);
+
+        let (shell, unknown) = cli_launch("/usr/bin/nu".into(), Vec::new(), "opencode", &[]);
+        assert_eq!(shell, "/bin/sh");
+        assert_eq!(unknown, ["-c", r#"exec "$0" "$@""#, "opencode"]);
+    }
+
+    #[test]
+    fn cli_launch_runs_the_command_with_literal_args() {
+        let args = vec!["$HOME; echo pwned".to_string()];
+        let (shell, argv) = cli_launch("/bin/sh".into(), Vec::new(), "printf", &args);
+        let out = std::process::Command::new(shell)
+            .args(argv)
+            .output()
+            .expect("run sh");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "$HOME; echo pwned");
     }
 
     #[test]

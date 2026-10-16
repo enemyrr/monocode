@@ -6,6 +6,10 @@ import {
   type TerminalMetaPatch,
 } from "../../terminal/model/terminalTab";
 import type { HarnessId } from "../../sessions/model/session";
+import {
+  terminalProfile,
+  type TerminalProfileId,
+} from "../../terminal/model/terminal-profiles";
 import { pathKey } from "../../../shared/lib/paths";
 
 /**
@@ -75,6 +79,8 @@ export type FilePaneTab = {
   /** Read-only transcript of an orchestration worker. Live only — not persisted. */
   agent?: AgentTabSource;
   terminal?: boolean;
+  /** Agent CLI the terminal runs instead of the login shell. */
+  profile?: TerminalProfileId;
   /** Foreground command when it isn't the shell. Live only — not persisted. */
   foreground?: string;
   /** Temporary tab: the next preview open in its pane replaces it. */
@@ -311,13 +317,17 @@ export function newTerminalFile(
   cwd: string,
   title?: string,
   projectCwd?: string,
+  profile?: TerminalProfileId,
 ): FilePaneTab {
   return {
     id: crypto.randomUUID(),
-    path: title ?? defaultTerminalTitle(cwd),
+    path: profile
+      ? terminalProfile(profile).label
+      : (title ?? defaultTerminalTitle(cwd)),
     cwd,
     ...(projectCwd && projectCwd !== cwd ? { projectCwd } : {}),
     terminal: true,
+    ...(profile ? { profile } : {}),
   };
 }
 

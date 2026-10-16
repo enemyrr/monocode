@@ -17,6 +17,7 @@ import {
   stubFilePreview,
 } from "./preview";
 import { joinStreamText } from "./streamText";
+import { hasReadableText } from "../../../features/sessions/model/transcriptActivity";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
@@ -78,6 +79,8 @@ export function applyHarnessEvent(
         paths: event.paths,
         streaming: true,
         agentModel: event.agentModel,
+        agentEffort: event.agentEffort,
+        agentTokens: event.agentTokens,
         ...(event.background ? { background: true } : {}),
       });
     case "tool.updated":
@@ -91,6 +94,8 @@ export function applyHarnessEvent(
         paths: event.paths,
         streaming: event.status !== "completed" && event.status !== "failed",
         agentModel: event.agentModel,
+        agentEffort: event.agentEffort,
+        agentTokens: event.agentTokens,
       });
     case "agent.step":
       return recordAgentStep(session, event);
@@ -533,7 +538,12 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     busy: false,
     turnReady: false,
     pendingQuestion: undefined,
-    blocks: stampTurnDuration(settled.blocks.map(stopBlockProgress), endedAt),
+    blocks: stampTurnDuration(
+      settled.blocks
+        .filter((block) => !isBareProseStream(block))
+        .map(stopBlockProgress),
+      endedAt,
+    ),
   };
 }
 
@@ -951,10 +961,13 @@ function upsertTool(
     paths?: string[];
     streaming: boolean;
     agentModel?: string;
+    agentEffort?: string;
+    agentTokens?: number;
     background?: boolean;
   },
 ): Session {
   const index = findToolIndex(session, patch);
+  const agentMeta = agentRunPatch(patch);
   if (index < 0) {
     const detail = capToolDetail(patch.detail);
     const preview = fillPreview(patch.preview, detail, patch.kind, patch.title);
@@ -969,8 +982,8 @@ function upsertTool(
       role: "tool",
       text: label,
       streaming: patch.streaming,
-      ...(patch.agentModel
-        ? { agentRun: { name: label, model: patch.agentModel, steps: [] } }
+      ...(agentMeta
+        ? { agentRun: { name: label, ...agentMeta, steps: [] } }
         : {}),
       tool: {
         callId: patch.callId,
@@ -1010,7 +1023,7 @@ function upsertTool(
     prev.tool?.status === status &&
     prev.tool?.detail === detail &&
     prev.tool?.paths === paths &&
-    (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
+    (!agentMeta || sameAgentRunPatch(prev.agentRun, agentMeta)) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
     samePreview(prev.tool?.preview, preview)
   ) {
@@ -1021,13 +1034,13 @@ function upsertTool(
     ...prev,
     text: label,
     streaming: patch.streaming,
-    ...(patch.agentModel || prev.agentRun
+    ...(agentMeta || prev.agentRun
       ? {
           agentRun: {
             steps: prev.agentRun?.steps ?? [],
             ...prev.agentRun,
             name: agentName,
-            ...(patch.agentModel ? { model: patch.agentModel } : {}),
+            ...agentMeta,
           },
         }
       : {}),
@@ -1152,6 +1165,8 @@ function recordAgentStep(
 
   const next: AgentRunMeta = {
     ...(run?.model ? { model: run.model } : {}),
+    ...(run?.effort ? { effort: run.effort } : {}),
+    ...(run?.tokens ? { tokens: run.tokens } : {}),
     name:
       event.agentName ||
       run?.name ||
@@ -1167,6 +1182,36 @@ function recordAgentStep(
   const blocks = session.blocks.slice();
   blocks[index] = { ...prev, agentRun: next };
   return { ...session, blocks };
+}
+
+type AgentRunPatch = Partial<Pick<AgentRunMeta, "model" | "effort" | "tokens">>;
+
+/** What a tool event reports about its subagent, or nothing. */
+function agentRunPatch(patch: {
+  agentModel?: string;
+  agentEffort?: string;
+  agentTokens?: number;
+}): AgentRunPatch | undefined {
+  const next: AgentRunPatch = {
+    ...(patch.agentModel ? { model: patch.agentModel } : {}),
+    ...(patch.agentEffort ? { effort: patch.agentEffort } : {}),
+    ...(patch.agentTokens && patch.agentTokens > 0
+      ? { tokens: patch.agentTokens }
+      : {}),
+  };
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function sameAgentRunPatch(
+  run: AgentRunMeta | undefined,
+  patch: AgentRunPatch,
+): boolean {
+  return (
+    !!run &&
+    (patch.model === undefined || run.model === patch.model) &&
+    (patch.effort === undefined || run.effort === patch.effort) &&
+    (patch.tokens === undefined || run.tokens === patch.tokens)
+  );
 }
 
 function sameAgentRun(a: AgentRunMeta, b: AgentRunMeta): boolean {
@@ -1230,8 +1275,17 @@ function sealLastStream(blocks: Block[]): Block[] {
     return blocks.slice();
   }
   const next = blocks.slice();
-  next[index] = { ...last, streaming: false };
+  if (isBareProseStream(last)) next.splice(index, 1);
+  else next[index] = { ...last, streaming: false };
   return next;
+}
+
+function isBareProseStream(block: Block): boolean {
+  return (
+    block.role === "assistant" &&
+    !!block.streaming &&
+    !hasReadableText(block.text)
+  );
 }
 
 function displayLabel(
@@ -1336,10 +1390,9 @@ function isCallId(value: string): boolean {
 function finishRole(session: Session, role: Block["role"]): Session {
   return {
     ...session,
-    blocks: session.blocks.map((block) =>
-      block.role === role && block.streaming
-        ? { ...block, streaming: false }
-        : block,
-    ),
+    blocks: session.blocks.flatMap((block) => {
+      if (block.role !== role || !block.streaming) return [block];
+      return isBareProseStream(block) ? [] : [{ ...block, streaming: false }];
+    }),
   };
 }

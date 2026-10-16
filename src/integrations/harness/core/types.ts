@@ -54,6 +54,10 @@ export type HarnessEvent =
   | {
       type: "tool.started";
       agentModel?: string;
+      /** Reasoning effort reported for the subagent an agent call runs. */
+      agentEffort?: string;
+      /** Total tokens that subagent has used, when the provider counts them. */
+      agentTokens?: number;
       callId: string;
       title: string;
       kind?: string;
@@ -67,6 +71,10 @@ export type HarnessEvent =
   | {
       type: "tool.updated";
       agentModel?: string;
+      /** Reasoning effort reported for the subagent an agent call runs. */
+      agentEffort?: string;
+      /** Total tokens that subagent has used, when the provider counts them. */
+      agentTokens?: number;
       callId: string;
       title?: string;
       kind?: string;

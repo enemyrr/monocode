@@ -18,6 +18,7 @@ import {
 import { forgetHarnessSession } from "../../integrations/harness/core/registry";
 import { isMonoSession } from "../../features/monos/model/mono";
 import { isHabitRun } from "../../features/monos/model/monoHabits";
+import { delegationResidents } from "../../features/sessions/model/delegated-sessions";
 
 const SESSION_DETACH_DELAY_MS = 250;
 
@@ -87,6 +88,8 @@ export function useIdleSessionDetach({
       )
         visibleIds.add(session.id);
     }
+    // A delegated child and its parent stay loaded until the child answers.
+    for (const id of delegationResidents(sessions)) visibleIds.add(id);
     for (const sessionId of visibleIds) {
       openingSessionIds.current.delete(sessionId);
       loadedSessionCache.current.delete(sessionId);

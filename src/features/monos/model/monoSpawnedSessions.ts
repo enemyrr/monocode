@@ -2,6 +2,7 @@ import { unwrapShellCommand } from "../../../integrations/harness/core/shellInte
 import { monoCodeToolCall } from "../../sessions/model/monocodeToolCall";
 import {
   HARNESSES,
+  latestTurnStart,
   sessionDraftBlock,
   sessionNeedsInput,
   type Block,
@@ -191,6 +192,8 @@ export function launchedSessionState(session: Session): LaunchedSessionState {
   if (sessionNeedsInput(session)) return "input";
   if (session.busy) return "working";
   if (sessionDraftBlock(session)) return "draft";
+  if (session.blocks[latestTurnStart(session.blocks)]?.stopped)
+    return "stopped";
   const notice = session.blocks[session.blocks.length - 1]?.notice;
   if (notice === "error") return "failed";
   if (notice === "interrupt") return "stopped";

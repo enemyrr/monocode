@@ -46,6 +46,7 @@ mod remote;
 mod remote_ssh;
 mod search;
 mod session_store;
+mod shell_run;
 mod skills;
 pub mod ssh_askpass;
 #[cfg(target_os = "macos")]
@@ -231,6 +232,19 @@ fn should_request_quit(code: Option<i32>) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        let version = context.package_info().version.to_string();
+        let bundle_version = context
+            .config()
+            .bundle
+            .macos
+            .bundle_version
+            .as_deref()
+            .unwrap_or(&version);
+        macos::ensure_dev_bundle(&version, bundle_version);
+    }
     #[cfg(target_os = "macos")]
     macos::register_spellcheck_default();
     #[cfg(windows)]
@@ -258,6 +272,7 @@ pub fn run() {
         })
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
+        .manage(shell_run::ShellRuns::default())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .setup(|app| {
@@ -362,6 +377,7 @@ pub fn run() {
             fs::git_sync,
             fs::git_range_context,
             fs::git_pr_status,
+            fs::git_pr_details,
             fs::git_pr_create,
             fs::git_github_status,
             fs::github_monocode_star_status,
@@ -498,6 +514,8 @@ pub fn run() {
             pty::pty_status,
             pty::pty_kill,
             pty::pty_kill_all,
+            shell_run::shell_run_start,
+            shell_run::shell_run_cancel,
             session_store::session_upsert,
             session_store::session_list_by_project,
             session_store::session_rebase_project,
@@ -616,7 +634,7 @@ pub fn run() {
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building MonoCode");
 
     app.run(|handle, event| match event {
@@ -685,11 +703,9 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
     }
-}
-
-#[cfg(all(debug_assertions, target_os = "macos"))]
-pub fn ensure_macos_dev_bundle() {
-    macos::ensure_dev_bundle();
+    if let Some(runs) = handle.try_state::<shell_run::ShellRuns>() {
+        runs.kill_all();
+    }
 }
 
 #[cfg(test)]

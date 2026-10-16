@@ -1,3 +1,4 @@
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
 import {
   ArrowUp,
   AiIdea,
@@ -120,6 +121,12 @@ import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
+import { isShellDraft, parseShellCommand } from "../model/shell-command";
+import {
+  SHELL_PREFIX_CLASS,
+  ShellModeHint,
+  type ComposerShellCommand,
+} from "./shell-mode";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
@@ -181,6 +188,16 @@ import {
 } from "../model/sessionFolders";
 import { SessionFolderPicker } from "./SessionFolderPicker";
 import { MCP_COMMAND, isMcpCommand } from "../model/mcpCommand";
+import {
+  NEW_SESSION_COMMAND,
+  isNewSessionCommand,
+} from "../model/new-session-command";
+import {
+  GIT_ACTION_COMMANDS,
+  GIT_ACTION_COMMAND_NAMES,
+  parseGitActionCommand,
+  type GitActionCommand,
+} from "../../source-control/model/git-actions";
 import {
   mcpContextText,
   mcpTagParts,
@@ -255,6 +272,7 @@ type Props = {
   worktreeRemoved?: boolean;
   onManageWorktrees?: () => void;
   onNewTerminal?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onModelChange: (harness: HarnessId, model: string) => void;
   onModelSettingsChange?: (settings: Record<string, string>) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -274,10 +292,16 @@ type Props = {
     text: string,
     options?: { draft?: boolean },
   ) => boolean | void;
+  /** Runs a `!<command>` draft in the shell instead of sending it. */
+  shellCommand?: ComposerShellCommand;
   canSaveDraft?: boolean;
   onSaveDraft?: (text: string, attachments: Attachment[]) => boolean | void;
   onStop?: () => void;
   onCompactContext?: () => boolean;
+  /** Run a `/commit`, `/pr`, `/merge`… command; false keeps the draft. */
+  onGitAction?: (command: GitActionCommand) => boolean | void;
+  /** Run `/new` or `/clear` as a new session instead of sending it. */
+  onNewSession?: () => void;
   onPlaceInFolder?: (target: SessionFolderTarget) => void;
   onDeleteQueuedMessage?: (messageId: string) => void;
   onEditQueuedMessage?: (messageId: string, text: string) => void;
@@ -378,6 +402,7 @@ export function Composer({
   worktreeRemoved = false,
   onManageWorktrees,
   onNewTerminal,
+  onNewProfileTerminal,
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
@@ -389,10 +414,13 @@ export function Composer({
   onQuestionReply,
   onQuestionInteraction,
   onSubmit,
+  shellCommand,
   canSaveDraft = false,
   onSaveDraft,
   onStop,
   onCompactContext,
+  onGitAction,
+  onNewSession,
   onPlaceInFolder,
   onDeleteQueuedMessage,
   onEditQueuedMessage,
@@ -551,11 +579,15 @@ export function Composer({
             ...(canSaveDraft && onSaveDraft ? [DRAFT_COMMAND] : []),
             COMPACT_COMMAND,
             ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
+            ...(onGitAction ? GIT_ACTION_COMMANDS : []),
+            ...(onNewSession ? [NEW_SESSION_COMMAND] : []),
             ...skills.filter(
               (skill) =>
                 ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
                   skill.name,
                 ) &&
+                !(onGitAction && GIT_ACTION_COMMAND_NAMES.has(skill.name)) &&
+                !(onNewSession && skill.name === NEW_SESSION_COMMAND.name) &&
                 (skill.kind === "native" ||
                   (skill.name !== PLAN_COMMAND.name &&
                     skill.name !== COMPACT_COMMAND.name &&
@@ -574,6 +606,8 @@ export function Composer({
       hideTopBar,
       canSaveDraft,
       onSaveDraft,
+      onGitAction,
+      onNewSession,
     ],
   );
   const skillLimit = hasNativeCommands(harness)
@@ -588,6 +622,13 @@ export function Composer({
     [slashItems],
   );
   const leadingMode = leadingModeCommand(draft, skillNames);
+  const shellMode =
+    !!shellCommand &&
+    isShellDraft(draft) &&
+    attachments.length === 0 &&
+    !inboxCard &&
+    !noteCard &&
+    !handoffCard;
   const modeIndent = leadingMode ? MODE_COMMAND_INDENT : undefined;
   useLayoutEffect(() => {
     // The indent can rewrap the first line after the input already resized.
@@ -1299,6 +1340,41 @@ export function Composer({
       openMcpPicker();
       return;
     }
+    if (
+      onNewSession &&
+      !remote &&
+      !draftSelected &&
+      isNewSessionCommand(value)
+    ) {
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setSlash(null);
+      setMention(null);
+      syncHasValue("", attachmentsRef.current);
+      onNewSession();
+      return;
+    }
+    const gitCommand =
+      onGitAction && !remote && !draftSelected
+        ? parseGitActionCommand(value)
+        : null;
+    if (gitCommand && onGitAction) {
+      if (onGitAction(gitCommand) === false) return;
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setSlash(null);
+      setMention(null);
+      syncHasValue("", attachmentsRef.current);
+      return;
+    }
     const draftCommand = canSaveDraft
       ? consumeDraftCommand(value)
       : { text: value, matched: false };
@@ -1324,6 +1400,29 @@ export function Composer({
       setMention(null);
       setCreatingSkill(false);
       setCreateError(null);
+      syncHasValue("", []);
+      return;
+    }
+    if (
+      shellCommand &&
+      isShellDraft(value) &&
+      attachmentsRef.current.length === 0 &&
+      !inboxCard &&
+      !noteCard &&
+      !handoffCard
+    ) {
+      const command = parseShellCommand(value);
+      if (!command || shellCommand.unavailable) return;
+      if (shellCommand.onRun(command) === false) return;
+      pasteGenerationRef.current += 1;
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setSlash(null);
+      setMention(null);
       syncHasValue("", []);
       return;
     }
@@ -1935,6 +2034,9 @@ export function Composer({
                   enabled={enabled}
                   onCwdChange={onCwdChange}
                   onNewTerminal={worktreeRemoved ? undefined : onNewTerminal}
+                  onNewProfileTerminal={
+                    worktreeRemoved ? undefined : onNewProfileTerminal
+                  }
                   onClose={() => ref.current?.focus()}
                 />
               ) : null}
@@ -2022,6 +2124,10 @@ export function Composer({
             </p>
           ) : null}
 
+          {shellMode && shellCommand ? (
+            <ShellModeHint shell={shellCommand} />
+          ) : null}
+
           {inboxCard ? (
             <InboxMiniCard card={inboxCard} onDismiss={onInboxCardDismiss} />
           ) : null}
@@ -2048,6 +2154,7 @@ export function Composer({
             >
               <ComposerHighlight
                 text={draft}
+                shell={shellMode}
                 mode={leadingMode}
                 names={skillNames}
                 mentions={mentionIndex.labels}
@@ -2421,17 +2528,29 @@ export function Composer({
 
 function ComposerHighlight({
   text,
+  shell,
   mode,
   names,
   mentions,
   mcpTags,
 }: {
   text: string;
+  shell: boolean;
   mode: ModeCommandToken | null;
   names: ReadonlySet<string>;
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
 }) {
+  if (shell) {
+    const bang = text.indexOf("!") + 1;
+    return (
+      <>
+        <span className={SHELL_PREFIX_CLASS}>{text.slice(0, bang)}</span>
+        {text.slice(bang)}
+        {text.endsWith("\n") ? "\n" : null}
+      </>
+    );
+  }
   const rest = mode ? text.slice(mode.end) : text;
   const parts = skillTextParts(rest, names);
   return (

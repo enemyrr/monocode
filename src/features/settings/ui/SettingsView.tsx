@@ -34,6 +34,14 @@ import {
   type ReactNode,
 } from "react";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { useTerminalProfiles } from "../../terminal/ui/use-terminal-profiles";
+import { terminalProfile } from "../../terminal/model/terminal-profiles";
+import {
+  asNewTabTarget,
+  loadNewTabTarget,
+  saveNewTabTarget,
+  type NewTabTarget,
+} from "../model/new-tab-target";
 import {
   ColorPickerPopover,
   ColorSwatchRow,
@@ -195,7 +203,7 @@ import {
   projectName,
 } from "../../../shared/lib/paths";
 import { revealPath } from "../../../platform/tauri/fs";
-import { IS_LINUX, IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
+import { IS_LINUX, IS_MAC, IS_WIN, MOD } from "../../../platform/tauri/platform";
 import {
   loadArchivedProjects,
   looksLikeProject,
@@ -902,6 +910,7 @@ function GeneralPage({
             onChange={onFileTabMode}
           />
         </Row>
+        <NewTabTargetRow />
         <Row
           id="tab-animations"
           label="Tab animations"
@@ -968,6 +977,47 @@ function GeneralPage({
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
       </Group>
     </>
+  );
+}
+
+function NewTabTargetRow() {
+  const [target, setTarget] = useState<NewTabTarget>(loadNewTabTarget);
+  const profiles = useTerminalProfiles();
+  const options = [
+    { value: "agent", label: "Agent chat" },
+    { value: "terminal", label: "Terminal" },
+    ...profiles.map((profile) => ({
+      value: profile.id,
+      label: profile.label,
+    })),
+  ];
+  // Keep a saved CLI listed after it is uninstalled so the value never blanks.
+  if (
+    target !== "agent" &&
+    target !== "terminal" &&
+    !profiles.some((profile) => profile.id === target)
+  ) {
+    options.push({ value: target, label: terminalProfile(target).label });
+  }
+  const onChange = (value: string) => {
+    const next = asNewTabTarget(value);
+    if (!next) return;
+    saveNewTabTarget(next);
+    setTarget(next);
+  };
+  return (
+    <Row
+      id="new-tab"
+      label="New tab opens"
+      description={`What ${MOD}T and the + button open. A terminal opens as a top-bar tab in the focused session's worktree or the project folder. Remote projects always get an agent chat.`}
+    >
+      <Select
+        label="New tab opens"
+        value={target}
+        options={options}
+        onChange={onChange}
+      />
+    </Row>
   );
 }
 
@@ -2793,7 +2843,13 @@ function KeybindingsPage() {
               >
                 {row.command}
               </span>
-              {row.command === "App: Quick Composer" ? (
+              {row.fixed ? (
+                <span className="w-40 shrink-0">
+                  <span className="inline-block h-6 w-28 truncate rounded-md border border-content/10 px-1.5 font-mono text-[11px] leading-6 text-content/60">
+                    {row.keys}
+                  </span>
+                </span>
+              ) : row.command === "App: Quick Composer" ? (
                 <QuickComposerShortcutEditor />
               ) : (
                 <KeybindingShortcutEditor

@@ -18,14 +18,17 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import {
+  createContext,
   memo,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
   type RefObject,
@@ -50,6 +53,13 @@ import { ArtifactCard } from "../../artifacts/ui/ArtifactCard";
 import { artifactCards } from "../../artifacts/artifacts";
 
 import { TerminalSpinner } from "./TerminalSpinner";
+import { SubagentChip } from "./subagent-chip";
+import {
+  archiveFinishedSubagents,
+  SessionSubagentCache,
+  unarchivedSubagents,
+  type SessionSubagent,
+} from "../model/session-subagents";
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
@@ -82,6 +92,7 @@ import { resolveModel } from "../model/models";
 import { harnessForTurn } from "../model/secondOpinion";
 import { TranscriptTurnCache } from "../model/transcriptTurnCache";
 import { Shimmer } from "../../../shared/ui/Shimmer";
+import { ShellRunRow, ShellRunSendContext } from "./shell-run-row";
 import {
   hasPendingApproval,
   HARNESS_TITLE,
@@ -229,6 +240,8 @@ type Props = {
   backgroundTasks?: string[];
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onAddToChat?: (text: string) => void;
+  /** Puts a finished `!<command>` run's result in the composer. */
+  onSendShellRun?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
@@ -260,6 +273,8 @@ type Props = {
   onScrollerChange?: (el: HTMLDivElement | null) => void;
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
+  /** Opens the session behind a `sessions.delegate` subagent row. */
+  onOpenDelegatedSession?: (sessionId: string) => void;
 };
 
 function AgentTranscriptComponent({
@@ -728,7 +743,11 @@ function AgentTranscriptComponent({
   // A scheduled update can land while the chat's own turn is still running.
   const activeTurnIndex = turns.reduce(
     (latest, turn, index) =>
-      turn[0].monoHabit || turn[0].role === "handoff" ? latest : index,
+      turn[0].monoHabit ||
+      turn[0].role === "handoff" ||
+      (turn[0].shellRun && !turn[0].shellRun.inTurn)
+        ? latest
+        : index,
     -1,
   );
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount);
@@ -955,6 +974,71 @@ function AgentTranscriptComponent({
     onNavigateReady?.(navigateToBlock);
   }, [navigateToBlock, onNavigateReady]);
 
+  // A Mono's turns keep their process in the sidebar, so it has no chip. Only
+  // the active turn can hold a running run, the same rule as `settled`.
+  const [subagentCache] = useState(() => new SessionSubagentCache());
+  const sessionSubagents = inlineWork
+    ? NO_SUBAGENTS
+    : subagentCache.collect(turns, busy ? turns[activeTurnIndex] : undefined);
+  const sessionSubagentsRef = useRef(sessionSubagents);
+  sessionSubagentsRef.current = sessionSubagents;
+  const [archivedSubagents, setArchivedSubagents] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const chipSubagents = useMemo(
+    () => unarchivedSubagents(sessionSubagents, archivedSubagents),
+    [sessionSubagents, archivedSubagents],
+  );
+  const archiveSubagents = useCallback(
+    () =>
+      setArchivedSubagents((archived) =>
+        archiveFinishedSubagents(sessionSubagentsRef.current, archived),
+      ),
+    [],
+  );
+  const [subagentFocus] = useState(() => new SubagentFocusStore());
+  // Opens the run's turn, phase, and row in one synchronous render, then
+  // aligns with instant scrolls: a smooth one loses to the scroll anchor
+  // while the opened fold grows the turn above the viewport.
+  const focusSubagent = useCallback(
+    (blockId: string) => {
+      const turn = turnsRef.current.find((item) =>
+        item.some((block) => block.id === blockId),
+      );
+      if (!turn || !revealBlock(blockId)) return;
+      const turnId = turn[0].id;
+      flushSync(() => {
+        setOpenWork((current) =>
+          current[turnId] ? current : { ...current, [turnId]: true },
+        );
+        subagentFocus.set(blockId);
+      });
+      const el = scroller.current;
+      if (!el) return;
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+      const align = () => {
+        const target = el.querySelector<HTMLElement>(
+          `[data-subagent-id="${CSS.escape(blockId)}"]`,
+        );
+        if (!target) return;
+        const delta =
+          target.getBoundingClientRect().top -
+          el.getBoundingClientRect().top -
+          42;
+        if (Math.abs(delta) > 2) {
+          el.scrollTop += delta;
+          rememberScroll(el);
+        }
+      };
+      align();
+      requestAnimationFrame(() => {
+        align();
+        subagentFocus.set(null);
+      });
+    },
+    [revealBlock, rememberScroll, subagentFocus],
+  );
+
   useEffect(() => {
     const el = scroller.current;
     const owner = highlightOwner.current;
@@ -1009,7 +1093,10 @@ function AgentTranscriptComponent({
       ref={setScroller}
       className={`agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5${bottomAligned ? " mono-transcript-fades scrollbar-none" : ""}`}
     >
-      <TranscriptContent bottomAligned={bottomAligned}>
+      <TranscriptContent
+        bottomAligned={bottomAligned}
+        subagentFocus={subagentFocus}
+      >
         {onReturnToLatest ? (
           <div className="flex justify-center px-4 py-2">
             <button
@@ -1583,6 +1670,13 @@ function AgentTranscriptComponent({
                   ))}
                 </div>
               ) : null}
+              {isLastTurn && !parked ? (
+                <SubagentChip
+                  subagents={chipSubagents}
+                  onSelect={focusSubagent}
+                  onArchiveFinished={archiveSubagents}
+                />
+              ) : null}
               {/* The accessory keeps the pane's props, which go stale once parked. */}
               {isLastTurn && latestTurnAccessory && !parked
                 ? latestTurnAccessory
@@ -1654,11 +1748,18 @@ function AgentTranscriptComponent({
 
 function TranscriptContent({
   bottomAligned,
+  subagentFocus,
   children,
 }: {
   bottomAligned: boolean;
+  subagentFocus: SubagentFocusStore;
   children: ReactNode;
 }) {
+  const content = (
+    <SubagentFocusContext.Provider value={subagentFocus}>
+      {children}
+    </SubagentFocusContext.Provider>
+  );
   // The clip keeps the follow motion's in-flight offset out of scrollHeight.
   if (!bottomAligned) {
     return (
@@ -1667,7 +1768,7 @@ function TranscriptContent({
           data-transcript-content
           className="flex min-w-0 flex-col gap-1 pb-8"
         >
-          {children}
+          {content}
         </div>
       </div>
     );
@@ -1678,7 +1779,7 @@ function TranscriptContent({
         data-transcript-content
         className="flex min-w-0 shrink-0 flex-col gap-1"
       >
-        {children}
+        {content}
       </div>
     </div>
   );
@@ -1686,7 +1787,17 @@ function TranscriptContent({
 
 // Keep hidden panes' local state, and catch up with current props on activation.
 export const AgentTranscript = memo(
-  AgentTranscriptComponent,
+  function AgentTranscript(props: Props) {
+    return (
+      <ShellRunSendContext.Provider value={props.onSendShellRun}>
+        <DelegatedSessionOpenContext.Provider
+          value={props.onOpenDelegatedSession}
+        >
+          <AgentTranscriptComponent {...props} />
+        </DelegatedSessionOpenContext.Provider>
+      </ShellRunSendContext.Provider>
+    );
+  },
   (previous, next) => previous.visible === false && next.visible === false,
 );
 
@@ -2337,6 +2448,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
     }
+    if (block.shellRun) {
+      return <ShellRunRow run={block.shellRun} embedded={embedded} />;
+    }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
         <pre className="min-w-0 whitespace-pre-wrap break-words">
@@ -2369,7 +2483,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
 
 /**
  * A Mono's emoji answer, on the corner of the message it answers. The top
- * left keeps it clear of the bubble's tail and the hover actions below.
+ * left keeps it clear of the hover actions below.
  */
 function MonoReactionBadge({ emoji, live }: { emoji: string; live: boolean }) {
   return (
@@ -2629,10 +2743,6 @@ function UserMessageBlock({
                   ? "border border-dashed border-content/30 bg-content/4"
                   : "bg-content/10"
               } ${editing ? "edit-last-turn-bubble" : ""} ${
-                bubbleTail && chat && !block.draft && !compactFollowUp
-                  ? `agent-chat-bubble-tail-right ${singleLine ? "[--agent-bubble-radius:1.125rem]" : "[--agent-bubble-radius:0.75rem]"}`
-                  : ""
-              } ${
                 chat
                   ? `w-fit max-w-[min(100%,36rem)] ${singleLine ? "rounded-full" : "rounded-xl"}`
                   : "rounded-lg border border-content/10"
@@ -2698,11 +2808,10 @@ function UserMessageBlock({
                 >
                   <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded text-xs text-content/50 transition-colors hover:text-content/80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40 [&::-webkit-details-marker]:hidden">
                     <ChevronRight className="size-3 shrink-0 transition-transform group-open/ci:rotate-90" />
-                    <span>CI context</span>
+                    <span>Instructions</span>
                   </summary>
                   <p className="mt-2 text-xs text-content/50">
-                    CI instructions and failure details included with this
-                    request.
+                    Full instructions included with this request.
                   </p>
                   <pre className="mt-2 max-h-72 min-w-0 overflow-auto overscroll-contain rounded-md bg-content/5 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words text-content/70">
                     {block.ciContext}
@@ -3444,7 +3553,7 @@ export function MonoActivityTrail({
             <li
               key={first.id}
               data-mono-activity-block={first.id}
-              className="min-w-0 px-1 text-content/80"
+              className="mono-activity-prose min-w-0 px-1 text-content/80"
             >
               <AgentMarkdown
                 text={first.text}
@@ -3530,7 +3639,17 @@ function ActivityPhaseGroup({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
-  const [override, setOverride] = useState<boolean | null>(null);
+  const focused = useSubagentFocused((id) =>
+    phase.steps.some((step) => step.id === id),
+  );
+  const [override, setOverride] = useState<boolean | null>(
+    focused ? true : null,
+  );
+  const [wasFocused, setWasFocused] = useState(focused);
+  if (wasFocused !== focused) {
+    setWasFocused(focused);
+    if (focused) setOverride(true);
+  }
   const waiting = phase.steps.some(needsApproval);
   const open = waiting || (override ?? active);
   const [liveScroller, setLiveScroller] = useState<HTMLDivElement | null>(null);
@@ -3773,6 +3892,11 @@ function PhaseStep({
  * A row is a mascot, a name, and what that agent is doing right now. Click it
  * and the agent's own trail opens underneath.
  */
+/** Rows sit deep in the trail, so the opener for a delegated child is shared. */
+const DelegatedSessionOpenContext = createContext<
+  ((sessionId: string) => void) | undefined
+>(undefined);
+
 function SubagentStack({
   blocks,
   cwd,
@@ -3824,19 +3948,68 @@ function SubagentRow({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
-  const [override, setOverride] = useState<boolean | null>(null);
-  const open = override ?? toolCallState(block) === "rejected";
-  return (
-    <SubagentPanel
-      block={block}
-      cwd={cwd}
-      live={live}
-      open={open}
-      onToggle={() => setOverride(!open)}
-      onOpenFile={onOpenFile}
-      onOpenDiff={onOpenDiff}
-    />
+  const focused = useSubagentFocused((id) => id === block.id);
+  const [override, setOverride] = useState<boolean | null>(
+    focused ? true : null,
   );
+  const [wasFocused, setWasFocused] = useState(focused);
+  if (wasFocused !== focused) {
+    setWasFocused(focused);
+    if (focused) setOverride(true);
+  }
+  const open = override ?? subagentFailed(block);
+  return (
+    <div data-subagent-id={block.id} className="flex min-w-0 flex-col">
+      <SubagentPanel
+        block={block}
+        cwd={cwd}
+        live={live}
+        open={open}
+        onToggle={() => setOverride(!open)}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+      />
+    </div>
+  );
+}
+
+/**
+ * The run the subagent chip asked for, held for one frame. The row and the
+ * phase that holds it open on it. Each reads a boolean through
+ * `useSubagentFocused`, so a click re-renders only those two.
+ */
+class SubagentFocusStore {
+  private id: string | null = null;
+  private listeners = new Set<() => void>();
+
+  get = (): string | null => this.id;
+
+  set(id: string | null) {
+    this.id = id;
+    for (const listener of this.listeners) listener();
+  }
+
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+}
+
+const SubagentFocusContext = createContext<SubagentFocusStore | null>(null);
+
+const NO_SUBAGENTS: SessionSubagent[] = [];
+
+const noFocus = () => () => {};
+
+function useSubagentFocused(matches: (id: string) => boolean): boolean {
+  const store = useContext(SubagentFocusContext);
+  const snapshot = () => {
+    const id = store?.get();
+    return !!id && matches(id);
+  };
+  return useSyncExternalStore(store?.subscribe ?? noFocus, snapshot, snapshot);
 }
 
 /**
@@ -3866,7 +4039,15 @@ function SubagentPanel({
   const brief = subagentBrief(block);
   const model = subagentModelName(block);
   const state = toolCallState(block);
-  const active = live && state === "pending";
+  const delegation = block.delegation;
+  const openSession = useContext(DelegatedSessionOpenContext);
+  // A child waiting on an approval or a question is not working; it waits on
+  // the reader, who answers it in its own session.
+  const needsInput = !!delegation && block.tool?.status === "needs_input";
+  // A delegated child is a session of its own: it works for as long as it
+  // runs, whether or not the turn that started it is still live.
+  const active =
+    (live || !!delegation) && state === "pending" && !needsInput;
   const steps = block.agentRun?.steps ?? [];
   // The run's trail as transcript blocks, so the panel groups it the way the
   // main transcript groups the agent's own work: what it said, then the calls
@@ -3874,7 +4055,7 @@ function SubagentPanel({
   const stepBlocks = useMemo(() => steps.map(agentStepBlock), [steps]);
   const status = subagentStatusLine(block, steps);
   const report = subagentReport(block);
-  const failed = state === "rejected";
+  const failed = subagentFailed(block);
 
   // The name takes the room it needs and gives the rest back: a provider that
   // names a run with its whole brief must not push the row off the pane.
@@ -3890,9 +4071,7 @@ function SubagentPanel({
       ) : (
         <span
           className={`min-w-0 flex-1 truncate font-sans text-sm transition-colors duration-200 ${
-            state === "rejected"
-              ? "text-red-400"
-              : "text-content/75 group-hover:text-content"
+            failed ? "text-red-400" : "text-content/75 group-hover:text-content"
           }`}
         >
           {name}
@@ -3905,11 +4084,40 @@ function SubagentPanel({
               {model}
             </span>
           ) : null}
-          {status ? <span className="shrink-0">{status}</span> : null}
+          {status ? (
+            <span className={`shrink-0 ${needsInput ? "text-amber-400" : ""}`}>
+              {status}
+            </span>
+          ) : null}
         </span>
       ) : null}
     </span>
   );
+
+  const icon = delegation ? (
+    <HarnessIcon
+      harness={delegation.harness}
+      className={`size-3.5 shrink-0 ${
+        failed ? "text-red-400" : "text-content/60"
+      }`}
+    />
+  ) : (
+    <SubagentMascot name={name} state={state} active={active} />
+  );
+  const openAction =
+    delegation && openSession ? (
+      <button
+        type="button"
+        aria-label={`Open ${name}`}
+        title={needsInput ? "Open the session to answer it" : "Open session"}
+        onClick={() => openSession(delegation.sessionId)}
+        className={`shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[12px] transition-colors duration-200 hover:bg-content/8 hover:text-content ${
+          needsInput ? "text-amber-400" : "text-content/45"
+        }`}
+      >
+        {needsInput ? "Open to answer" : "Open"}
+      </button>
+    ) : null;
 
   // A run that has not reported a step yet has nothing to open into. The row
   // still holds its place, so the chevron arriving does not move anything.
@@ -3920,8 +4128,9 @@ function SubagentPanel({
         title={brief}
         className="-mx-1.5 flex min-w-0 items-center gap-2 px-1.5 py-1"
       >
-        <SubagentMascot name={name} state={state} active={active} />
+        {icon}
         {label}
+        {openAction}
         <span className="size-3.5 shrink-0" />
       </div>
     );
@@ -3929,27 +4138,30 @@ function SubagentPanel({
 
   return (
     <div className="flex min-w-0 flex-col">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
-        title={brief}
-        onClick={onToggle}
-        // An open row keeps the wash it lit up under the cursor, so the panel
-        // below reads as hanging off it rather than off the transcript.
-        className={`group -mx-1.5 flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
-          open ? "bg-content/8" : ""
-        }`}
-      >
-        <SubagentMascot name={name} state={state} active={active} />
-        {label}
-        <ChevronRight
-          className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
-            open ? "rotate-90" : ""
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
+          title={brief}
+          onClick={onToggle}
+          // An open row keeps the wash it lit up under the cursor, so the panel
+          // below reads as hanging off it rather than off the transcript.
+          className={`group -mx-1.5 flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
+            open ? "bg-content/8" : ""
           }`}
-          strokeWidth={1.75}
-        />
-      </button>
+        >
+          {icon}
+          {label}
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
+              open ? "rotate-90" : ""
+            }`}
+            strokeWidth={1.75}
+          />
+        </button>
+        {openAction}
+      </div>
       <div className="zen-phase-body" data-open={open}>
         {open ? (
           /*
@@ -4056,6 +4268,7 @@ function agentStepBlock(step: AgentStep): Block {
  * the agent is working, and the count says how far it has got.
  */
 function subagentStatusLine(block: Block, steps: AgentStep[]): string {
+  if (block.delegation) return delegationStatusLine(block);
   if (toolCallState(block) === "rejected") return "failed";
   const tools = steps.filter((step) => step.kind === "tool").length;
   if (tools === 0) return "";
@@ -4067,6 +4280,23 @@ function subagentStatusLine(block: Block, steps: AgentStep[]): string {
   ).length;
   if (!failed) return count;
   return `${count}, ${failed === 1 ? "1 failed" : `${failed} failed`}`;
+}
+
+/** A delegated child reports no steps here, only where its session stands. */
+function delegationStatusLine(block: Block): string {
+  const status = block.tool?.status;
+  if (status === "completed") return "done";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "stopped";
+  if (status === "needs_input") return "needs input";
+  return "running";
+}
+
+/** A stopped delegated child did not fail; only its own failure is red. */
+function subagentFailed(block: Block): boolean {
+  return block.delegation
+    ? block.tool?.status === "failed"
+    : toolCallState(block) === "rejected";
 }
 
 /** Whether the line that titled a group has more in it than the header shows. */

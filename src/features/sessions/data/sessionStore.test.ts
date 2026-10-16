@@ -316,6 +316,15 @@ describe("persisting a subagent's trail", () => {
     });
   });
 
+  it("keeps the effort and token count a provider reported", () => {
+    expect(
+      withRun({ name: "Explore", effort: "high", tokens: 106_300, steps: [] }),
+    ).toEqual({ name: "Explore", effort: "high", tokens: 106_300, steps: [] });
+    expect(withRun({ name: "Explore", tokens: Number.NaN, steps: [] })).toEqual(
+      { name: "Explore", steps: [] },
+    );
+  });
+
   it("drops steps a provider left malformed", () => {
     expect(
       withRun({

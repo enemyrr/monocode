@@ -1,3 +1,4 @@
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
 import {
   memo,
   useCallback,
@@ -173,6 +174,7 @@ type Shared = {
   onBtwRetry?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwDelete?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwStop?: (sessionId: string, turn: Block[], threadId: string) => void;
+  onShellRunBlock?: (sessionId: string, block: Block) => void;
   onBtwModelChange?: (
     sessionId: string,
     turn: Block[],
@@ -186,7 +188,8 @@ type Shared = {
     targetTabId: string,
     position: TitleTabDropPosition,
   ) => void;
-  onNewTerminal: (sessionId: string) => void;
+  onNewTerminal: (sessionId: string, profile?: TerminalProfileId) => void;
+  onNewSession?: () => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
 };
@@ -269,11 +272,13 @@ function PaneTreeComponent({
   onBtwRetry,
   onBtwDelete,
   onBtwStop,
+  onShellRunBlock,
   onBtwModelChange,
   onHandoff,
   onMovePane,
   onDetachPane,
   onNewTerminal,
+  onNewSession,
   onTerminalMetaChange,
   transcriptPool,
 }: Props) {
@@ -561,8 +566,10 @@ function PaneTreeComponent({
                   onBtwRetry={onBtwRetry}
                   onBtwDelete={onBtwDelete}
                   onBtwStop={onBtwStop}
+                  onShellRunBlock={onShellRunBlock}
                   onBtwModelChange={onBtwModelChange}
                   onNewTerminal={onNewTerminal}
+                  onNewSession={onNewSession}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
                 />

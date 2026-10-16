@@ -14,12 +14,20 @@ import {
   subscribeAutosave,
   subscribeKeybindings,
 } from "../../features/settings/model/settings";
+import {
+  asTerminalProfileId,
+  type TerminalProfileId,
+} from "../../features/terminal/model/terminal-profiles";
+import { useTerminalProfiles } from "../../features/terminal/ui/use-terminal-profiles";
 
 type MenuKey = "file" | "view" | "terminal";
 
 type Props = {
   onNew: () => void;
   onNewTerminal?: () => void;
+  onNewTerminalTab?: () => void;
+  onNewSession?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onToggleTerminal?: () => void;
   onGoToFile?: () => void;
   onToggleSidebar: () => void;
@@ -41,6 +49,9 @@ type Props = {
 export function MenuBar({
   onNew,
   onNewTerminal,
+  onNewTerminalTab,
+  onNewSession,
+  onNewProfileTerminal,
   onToggleTerminal,
   onGoToFile,
   onToggleSidebar,
@@ -60,6 +71,7 @@ export function MenuBar({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<MenuKey | null>(null);
+  const profiles = useTerminalProfiles(activeMenu === "terminal" && !!onNewProfileTerminal);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -136,13 +148,24 @@ export function MenuBar({
     (id: string) => {
       closeMenu();
       setOpen(false);
+      const profile = asTerminalProfileId(id.replace(/^new_terminal_/, ""));
+      if (profile) {
+        onNewProfileTerminal?.(profile);
+        return;
+      }
 
       switch (id) {
         case "new_tab":
           onNew();
           break;
+        case "new_session":
+          onNewSession?.();
+          break;
         case "new_terminal":
           onNewTerminal?.();
+          break;
+        case "new_terminal_tab":
+          onNewTerminalTab?.();
           break;
         case "toggle_terminal":
           onToggleTerminal?.();
@@ -218,6 +241,9 @@ export function MenuBar({
       onGoToFile,
       onNew,
       onNewTerminal,
+      onNewTerminalTab,
+      onNewSession,
+      onNewProfileTerminal,
       onToggleTerminal,
       onPickProject,
       onSearch,
@@ -236,6 +262,12 @@ export function MenuBar({
     switch (key) {
       case "file":
         return [
+          {
+            kind: "item",
+            id: "new_session",
+            label: "New Session",
+            shortcut: shortcut("App: New Session", `${MOD}N`),
+          },
           {
             kind: "item",
             id: "new_tab",
@@ -374,6 +406,19 @@ export function MenuBar({
             label: "New Terminal",
             shortcut: shortcut("Terminal: New", `${MOD}\``),
           },
+          {
+            kind: "item",
+            id: "new_terminal_tab",
+            label: "New Terminal Tab",
+            shortcut: shortcut("Terminal: New Tab", `${MOD}${SHIFT}T`),
+          },
+          ...(onNewProfileTerminal
+            ? profiles.map((profile) => ({
+                kind: "item" as const,
+                id: `new_terminal_${profile.id}`,
+                label: `New ${profile.label}`,
+              }))
+            : []),
           {
             kind: "item",
             id: "toggle_terminal",

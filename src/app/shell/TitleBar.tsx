@@ -56,6 +56,7 @@ import {
   useExternalTitleTabDrop,
 } from "../../features/workspace/model/paneDrop";
 import type { PaneEdge } from "../../features/workspace/model/layout";
+import type { TerminalProfileId } from "../../features/terminal/model/terminal-profiles";
 
 export type Tab = {
   id: string;
@@ -83,6 +84,8 @@ export type Tab = {
   groupId?: string;
   dirty?: boolean;
   terminal?: boolean;
+  /** CLI profile of the focused terminal in a terminal-only tab. */
+  terminalProfile?: TerminalProfileId;
   /** File id when the whole tab is one preview file; double-click pins it. */
   previewFileId?: string;
 };
@@ -116,11 +119,14 @@ type Props = {
   onToggleSessionSidebar?: () => void;
   onSelect: (id: string) => void;
   onNewTerminal?: () => void;
+  onNewProfileTerminal?: (profile: TerminalProfileId) => void;
   onOpenSettings?: () => void;
   onOpenInbox?: () => void;
   onOpenNotes?: () => void;
   onClose: (id: string) => void;
   onCloseMany: (ids: string[], fallbackId: string) => void;
+  /** Closes the given tabs, keeping the active one as a blank session. */
+  onCloseAll?: (ids: string[]) => void;
   onArchiveTab?: (id: string) => void;
   onDeleteTab?: (id: string) => void;
   onReorder: (ids: string[], movedId?: string) => void;
@@ -198,6 +204,11 @@ export function tabStripOverflow(
 
 export function titleTabClosable(tab: Tab, tabCount: number): boolean {
   return tabCount > 1 || !tab.blank;
+}
+
+/** Close All has work unless the only tab left is already blank. */
+export function titleTabsCanCloseAll(tabs: readonly Tab[]): boolean {
+  return tabs.some((tab) => titleTabClosable(tab, tabs.length));
 }
 
 export type TitleTabContextAction = "others" | "right" | "left";
@@ -365,6 +376,13 @@ function TitleTabItem({
             doneHarnesses={tab.doneHarnesses ?? []}
             dimmed={!active}
           />
+        ) : tab.terminalProfile ? (
+          <span className={!active ? "opacity-55" : undefined}>
+            <HarnessIcon
+              harness={tab.terminalProfile}
+              className="size-3.5 shrink-0"
+            />
+          </span>
         ) : tab.terminal || !fileIcon ? (
           <Terminal
             className={`size-3.5 shrink-0 ${
@@ -508,7 +526,7 @@ export function IconButton({
             }
           : undefined
       }
-      className={`grid size-6.5 place-items-center rounded-md ${
+      className={`grid size-6 place-items-center rounded-md ${
         disabled
           ? "text-content/25"
           : accent
@@ -638,11 +656,13 @@ function TitleBarComponent({
   onToggleSessionSidebar,
   onSelect,
   onNewTerminal,
+  onNewProfileTerminal,
   onOpenSettings,
   onOpenInbox,
   onOpenNotes,
   onClose,
   onCloseMany,
+  onCloseAll,
   onArchiveTab,
   onDeleteTab,
   onReorder,
@@ -822,6 +842,17 @@ function TitleBarComponent({
           label: "Close Tabs to the Left",
           disabled: contextCloseIds?.left.length === 0,
         },
+        ...(onCloseAll
+          ? [
+              {
+                kind: "item" as const,
+                id: "all",
+                label: "Close All Tabs",
+                shortcut: `${MOD}${SHIFT}W`,
+                disabled: !titleTabsCanCloseAll(tabs),
+              },
+            ]
+          : []),
         ...(contextTab.sessionCount > 0 && (onArchiveTab || onDeleteTab)
           ? [
               { kind: "sep" as const },
@@ -870,6 +901,10 @@ function TitleBarComponent({
     }
     if (id === "delete") {
       onDeleteTab?.(contextTab.id);
+      return;
+    }
+    if (id === "all") {
+      onCloseAll?.(tabIds);
       return;
     }
     if (id === "others" || id === "right" || id === "left") {
@@ -1007,6 +1042,7 @@ function TitleBarComponent({
           placement="below"
           onCwdChange={onSelectProject}
           onNewTerminal={onNewTerminal}
+          onNewProfileTerminal={onNewProfileTerminal}
           buttonClassName="flex h-full min-w-0 max-w-64 shrink items-center gap-2 px-6 text-left text-sm font-medium leading-tight"
         >
           <span className="min-w-0 truncate text-content/50">No project</span>

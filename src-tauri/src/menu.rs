@@ -145,6 +145,9 @@ pub fn dispatch(app: &AppHandle, id: &str) {
             let _ = app.emit("toggle_autosave", enabled);
         }
         "quit" => crate::window::request_quit(app),
+        "new_terminal_claude" | "new_terminal_codex" | "new_terminal_opencode" => {
+            let _ = app.emit("new_terminal_profile", &id["new_terminal_".len()..]);
+        }
         "close_other_tabs" | "next_tab" | "prev_tab" | "back_tab" | "forward_tab"
         | "split_right" | "split_down" | "focus_left" | "focus_right" | "focus_up"
         | "focus_down" | "sidebar_opacity" | "open_project" | "go_to_file" | "open_search"
@@ -157,6 +160,7 @@ pub fn dispatch(app: &AppHandle, id: &str) {
         // one window: a broadcast would make every window act on a single menu click. New Tab and
         // Close Tab also open or close a dock terminal when that window's dock has focus.
         "new_tab"
+        | "new_session"
         | "close_tab"
         | "toggle_sidebar"
         | "toggle_session_sidebar"
@@ -207,6 +211,14 @@ fn build(
     )?;
     let check_for_updates =
         MenuItemBuilder::with_id("check_for_updates", "Check for Updates…").build(app)?;
+    let new_session = menu_item(
+        app,
+        "new_session",
+        "New Session",
+        "CmdOrCtrl+N",
+        "App: New Session",
+        overrides,
+    )?;
     let new_window = menu_item(
         app,
         "new_window",
@@ -269,10 +281,15 @@ fn build(
         app,
         "new_terminal_tab",
         "New Terminal Tab",
-        "CmdOrCtrl+Shift+`",
+        "CmdOrCtrl+Shift+T",
         "Terminal: New Tab",
         overrides,
     )?;
+    let new_claude =
+        MenuItemBuilder::with_id("new_terminal_claude", "New Claude Code").build(app)?;
+    let new_codex = MenuItemBuilder::with_id("new_terminal_codex", "New Codex").build(app)?;
+    let new_opencode =
+        MenuItemBuilder::with_id("new_terminal_opencode", "New OpenCode").build(app)?;
     let toggle_terminal = menu_item(
         app,
         "toggle_terminal",
@@ -454,6 +471,7 @@ fn build(
     )?;
 
     let file = SubmenuBuilder::with_id(app, "file", "File")
+        .item(&new_session)
         .item(&new_window)
         .item(&open_project)
         .item(&open_search)
@@ -466,6 +484,9 @@ fn build(
         .item(&new_tab)
         .item(&new_terminal)
         .item(&new_terminal_tab)
+        .item(&new_claude)
+        .item(&new_codex)
+        .item(&new_opencode)
         .item(&split_right)
         .item(&split_down)
         .item(&close_tab)

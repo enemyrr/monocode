@@ -4,7 +4,9 @@ import type { SessionRecord } from "./sessionStore";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
-const { getSession } = await import("./sessionStore");
+const { getSession, sanitizeSessionForPersist } = await import(
+  "./sessionStore"
+);
 
 /** A saved Codex session holding the one row this PR repairs. */
 function codexRecord(): SessionRecord {
@@ -67,6 +69,40 @@ describe("restoring a session whose repair cannot be persisted", () => {
     expect((await getSession("s1"))?.blocks[0].monoSpawnedSessions).toEqual([
       launch,
     ]);
+  });
+
+  it("keeps a delegated child's link and its parent's row across a save", async () => {
+    const link = { sessionId: "parent", blockId: "delegation-child" };
+    const saved = sanitizeSessionForPersist({
+      id: "child",
+      harness: "codex",
+      model: "gpt-5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      title: "Review",
+      cwd: "/repo",
+      blocks: [{ id: "b0", role: "user", text: "Review the parser" }],
+      delegatedBy: link,
+    });
+    expect(saved.blocks[0].delegatedBy).toEqual(link);
+    const row = {
+      id: "delegation-child",
+      role: "tool",
+      text: "Review",
+      tool: { kind: "agent", status: "completed" },
+      delegation: { sessionId: "child", harness: "codex", delivered: true },
+    };
+    const record = {
+      ...codexRecord(),
+      id: "child",
+      blocks: [...saved.blocks, row],
+    } as unknown as SessionRecord;
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "session_get" ? record : null),
+    );
+    const restored = await getSession("child");
+    expect(restored?.delegatedBy).toEqual(link);
+    expect(restored?.blocks.at(-1)?.delegation).toEqual(row.delegation);
   });
 
   it("still returns the repaired session when the write fails", async () => {

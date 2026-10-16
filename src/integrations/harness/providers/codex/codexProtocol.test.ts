@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addCodexTurnUsage,
   buildThreadStartParams,
   buildTurnStartParams,
   buildTurnSteerParams,
@@ -630,19 +631,40 @@ describe("mapCodexNotification", () => {
     });
   });
 
-  it("retains the explicitly selected spawn model", () => {
+  it("retains the explicitly selected spawn model and effort", () => {
     const { events } = mapCodexNotification("item/completed", {
       item: {
         id: "spawn",
         type: "collabAgentToolCall",
         tool: "spawnAgent",
         model: "gpt-5.6-sol",
+        reasoningEffort: "high",
         status: "completed",
       },
     });
     expect(events[0]).toMatchObject({
       kind: "agent",
       agentModel: "gpt-5.6-sol",
+      agentEffort: "high",
+    });
+  });
+
+  it("carries the effort a subagent activity resolved at creation", () => {
+    const { events } = mapCodexNotification("item/completed", {
+      item: {
+        id: "activity",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thr_child",
+        agentPath: "/root/explorer",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "medium",
+      },
+    });
+    expect(events[0]).toMatchObject({
+      kind: "agent",
+      agentModel: "gpt-5.6-sol",
+      agentEffort: "medium",
     });
   });
 
@@ -979,13 +1001,6 @@ describe("mapCodexNotification thread/tokenUsage/updated", () => {
     });
     expect(mapped.events).toEqual([
       { type: "context", used: 42_000, window: 272_000 },
-      {
-        type: "turn.metrics",
-        inputTokens: 40_000,
-        cacheReadTokens: 30_000,
-        outputTokens: 2_000,
-        cacheHitPercent: 75,
-      },
     ]);
   });
 
@@ -1022,6 +1037,55 @@ describe("mapCodexNotification thread/tokenUsage/updated", () => {
   });
 });
 
+describe("addCodexTurnUsage", () => {
+  const reading = (
+    last: Record<string, number>,
+    total: Record<string, number>,
+  ) => ({
+    threadId: "t1",
+    turnId: "turn1",
+    tokenUsage: { last, total, modelContextWindow: 272_000 },
+  });
+
+  it("adds up every request in the turn, once each", () => {
+    const spent = { threadTotal: 100_000, turn: {} };
+    const first = {
+      totalTokens: 41_000,
+      inputTokens: 40_000,
+      cachedInputTokens: 30_000,
+      cacheWriteInputTokens: 0,
+      outputTokens: 1_000,
+    };
+    const second = {
+      totalTokens: 52_000,
+      inputTokens: 50_000,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 2_000,
+    };
+    expect(
+      addCodexTurnUsage(spent, reading(first, { totalTokens: 141_000 })),
+    ).toEqual({
+      inputTokens: 40_000,
+      outputTokens: 1_000,
+      cacheReadTokens: 30_000,
+      cacheHitPercent: 75,
+    });
+    // Codex re-sends an unchanged reading after compaction or a usage limit.
+    expect(
+      addCodexTurnUsage(spent, reading(first, { totalTokens: 141_000 })),
+    ).toBeNull();
+    expect(
+      addCodexTurnUsage(spent, reading(second, { totalTokens: 193_000 })),
+    ).toEqual({
+      inputTokens: 90_000,
+      outputTokens: 3_000,
+      cacheReadTokens: 30_000,
+      cacheHitPercent: (30_000 / 90_000) * 100,
+    });
+  });
+});
+
 describe("mapCodexSubagentSteps", () => {
   const subagentBash = (status: string, output?: string) =>
     mapCodexSubagentSteps("agent-1", "item/completed", {
@@ -1049,5 +1113,43 @@ describe("mapCodexSubagentSteps", () => {
   it("leaves a settled child's result off its step", () => {
     const steps = subagentBash("completed", "12 passed");
     expect(steps[0]).not.toHaveProperty("detail");
+  });
+
+  it("reads the child thread's model and effort when it starts", () => {
+    expect(
+      mapCodexSubagentSteps("agent-1", "thread/started", {
+        thread: { id: "thr_1", model: "gpt-5.6-sol", reasoningEffort: "low" },
+      }),
+    ).toEqual([
+      {
+        type: "tool.updated",
+        callId: "agent-1",
+        kind: "agent",
+        agentModel: "gpt-5.6-sol",
+        agentEffort: "low",
+      },
+    ]);
+  });
+
+  it("reports the child thread's running token total", () => {
+    const usage = (totalTokens: number) =>
+      mapCodexSubagentSteps("agent-1", "thread/tokenUsage/updated", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        tokenUsage: {
+          total: { totalTokens },
+          last: { totalTokens: 1_000 },
+          modelContextWindow: 200_000,
+        },
+      });
+    expect(usage(42_500)).toEqual([
+      {
+        type: "tool.updated",
+        callId: "agent-1",
+        kind: "agent",
+        agentTokens: 42_500,
+      },
+    ]);
+    expect(usage(0)).toEqual([]);
   });
 });

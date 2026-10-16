@@ -1,3 +1,4 @@
+import type { TerminalProfileId } from "../../terminal/model/terminal-profiles";
 import { GripVertical, X } from "../../../shared/ui/icons";
 import {
   memo,
@@ -11,6 +12,11 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { useGitActions } from "../../source-control/hooks/use-git-actions";
+import { MergePrDialog } from "../../source-control/ui/merge-pr-dialog";
+import { useSessionPr } from "../../source-control/hooks/use-session-pr";
+import { prStripState } from "../../source-control/model/pr-strip-state";
+import { SessionPrStrip } from "../../source-control/ui/session-pr-strip";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -49,6 +55,7 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { runShellCommand } from "../model/shell-run-store";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -208,6 +215,8 @@ export type SessionPaneProps = {
   onLinkedWorkItemUpdateCardDismiss?: (sessionId: string) => void;
   onNoteCardDismiss?: (sessionId: string) => void;
   onOpenArtifact?: (sessionId: string, id: string) => void;
+  /** Opens a child started by this session's `sessions.delegate`. */
+  onOpenDelegatedSession?: (sessionId: string) => void;
   onHandoffCardDismiss?: (sessionId: string) => void;
   onOpenLinkedWorkItem?: (item: LinkedWorkItem, sessionId: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => Promise<boolean>;
@@ -254,6 +263,7 @@ export type SessionPaneProps = {
   onBtwRetry?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwDelete?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwStop?: (sessionId: string, turn: Block[], threadId: string) => void;
+  onShellRunBlock?: (sessionId: string, block: Block) => void;
   onBtwModelChange?: (
     sessionId: string,
     turn: Block[],
@@ -261,7 +271,8 @@ export type SessionPaneProps = {
     model: string,
     modelSettings: Record<string, string>,
   ) => void;
-  onNewTerminal: (sessionId: string) => void;
+  onNewTerminal: (sessionId: string, profile?: TerminalProfileId) => void;
+  onNewSession?: () => void;
 
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
@@ -343,6 +354,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onLinkedWorkItemUpdateCardDismiss,
   onNoteCardDismiss,
   onOpenArtifact,
+  onOpenDelegatedSession,
   onHandoffCardDismiss,
   onOpenLinkedWorkItem,
   onArchiveSession,
@@ -368,6 +380,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onBtwStop,
   onBtwModelChange,
   onNewTerminal,
+  onNewSession,
+  onShellRunBlock,
   onPaneDragStart,
   transcriptPool,
 }: Props) {
@@ -585,6 +599,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
     },
     [],
   );
+  const sendShellRunToAgent = useCallback(
+    (text: string) => addSelectionToChat(text, "plain"),
+    [addSelectionToChat],
+  );
   const acknowledgeQuote = useCallback((handledId: number) => {
     setQuoteRequest((current) => acknowledgeQuoteRequest(current, handledId));
   }, []);
@@ -638,6 +656,35 @@ const LocalSessionPane = memo(function LocalSessionPane({
     monoTranscript.viewingOlderPage ||
     !!draftBlock;
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
+  const gitActionsEnabled =
+    !remote &&
+    !agent &&
+    !managed &&
+    !session.inboxAsk &&
+    looksLikeProject(session.cwd);
+  const gitActions = useGitActions({
+    cwd: workCwd,
+    branch: session.branch,
+    submit: ({ text, instructions }) =>
+      onSubmit(session.id, text, [], { instructions }),
+  });
+  const sessionPr = useSessionPr({
+    cwd: workCwd,
+    branch: session.branch,
+    enabled: gitActionsEnabled && visible && !isEmpty,
+    busy: !!session.busy,
+  });
+  const prData = sessionPr.data;
+  const prStrip = prData
+    ? prStripState({
+        pr: prData.pr,
+        branch: prData.index.branch,
+        defaultBranch: prData.index.defaultBranch,
+        hasRemote: !!prData.index.remote,
+        hasWork:
+          prData.index.aheadOfDefault > 0 || prData.index.files.length > 0,
+      })
+    : null;
   // The agent's input always sits at the bottom, like a chat.
   const dockComposer =
     remoteSessionLoading ||
@@ -718,6 +765,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       worktreeRemoved={session.worktreeRemoved}
       onManageWorktrees={onManageWorktrees}
       onNewTerminal={() => onNewTerminal(session.id)}
+      onNewProfileTerminal={(profile) => onNewTerminal(session.id, profile)}
       onModelChange={(harness, model) => {
         onModelChange(session.id, harness, model);
         const selected = resolveModel(harness, model);
@@ -750,8 +798,31 @@ const LocalSessionPane = memo(function LocalSessionPane({
         return onSubmit(session.id, text, attachments, options);
       }}
       onBtwCommand={btw.openWith}
+      shellCommand={
+        agent || managed || session.inboxAsk || session.worktreeRemoved
+          ? undefined
+          : {
+              cwd: workCwd,
+              unavailable: remote
+                ? "Shell commands don't run on remote projects yet"
+                : isEmpty
+                  ? "Send a first message before running shell commands"
+                  : undefined,
+              onRun: (command) => {
+                if (!onShellRunBlock) return false;
+                runShellCommand({
+                  command,
+                  cwd: workCwd,
+                  inTurn: !!session.busy,
+                  onUpdate: (block) => onShellRunBlock(session.id, block),
+                });
+              },
+            }
+      }
       onStop={() => onStop(session.id)}
       onCompactContext={() => onCompactContext(session.id)}
+      onGitAction={gitActionsEnabled ? gitActions.run : undefined}
+      onNewSession={agent || managed ? undefined : onNewSession}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
@@ -963,6 +1034,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ? (id) => onOpenArtifact(session.id, id)
                         : undefined
                     }
+                    onOpenDelegatedSession={onOpenDelegatedSession}
                     agentMascot={agent}
                     bottomAligned={!!agent}
                     inlineWork={!!agent}
@@ -1000,6 +1072,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     backgroundTasks={session.backgroundTasks}
                     onApproval={session.worktreeRemoved ? undefined : approve}
                     onAddToChat={addSelectionToChat}
+                    onSendShellRun={sendShellRunToAgent}
                     onSaveNote={notesEnabled ? saveNote : undefined}
                     onSendDraft={
                       draftBlock
@@ -1194,9 +1267,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     }
                     // The plan's usage, as the session footer shows it,
                     // which a Mono in full view covers. Its account moves
-                    // with the usage-limit notice, not here.
+                    // with the usage-limit notice, not here. A narrow chat
+                    // drops it first, then shows the model controls as icons.
                     tools={
-                      <div className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55">
+                      <div className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 @max-md:hidden">
                         <UsageChips
                           providers={monoUsageProviders(session.harness)}
                           session={{
@@ -1222,6 +1296,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           hideSettings
                           hotkeys={focused && !btw.open}
                           variant="text"
+                          labelClassName="@max-sm:hidden"
                           onChange={(harness, model) =>
                             onModelChange(session.id, harness, model)
                           }
@@ -1234,6 +1309,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           model={session.model}
                           values={session.modelSettings}
                           variant="text"
+                          labelClassName="@max-sm:hidden"
                           onSettingsChange={(settings) =>
                             onModelSettingsChange(session.id, settings)
                           }
@@ -1249,7 +1325,26 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   />
                 </>
               ) : (
-                composer
+                <>
+                  {prData && prStrip && gitActionsEnabled ? (
+                    <SessionPrStrip
+                      pr={prData.pr}
+                      branch={prData.index.branch}
+                      state={prStrip}
+                      onAction={(action) =>
+                        gitActions.run(
+                          action === "pr"
+                            ? { action, draft: false, note: "" }
+                            : action === "merge"
+                              ? { action }
+                              : { action, note: "" },
+                          prData.pr,
+                        )
+                      }
+                    />
+                  ) : null}
+                  {composer}
+                </>
               )}
             </div>
           ) : null}
@@ -1266,6 +1361,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
           />
+          {gitActions.merge ? (
+            <MergePrDialog
+              cwd={workCwd}
+              initialMethod={gitActions.merge.method}
+              onClose={() => {
+                gitActions.closeMerge();
+                void sessionPr.refresh(true);
+              }}
+            />
+          ) : null}
         </div>
       </div>
     </div>

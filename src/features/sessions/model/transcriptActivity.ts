@@ -15,7 +15,7 @@ import {
 } from "../../../shared/lib/paths";
 import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
-import { allModels } from "./models";
+import { allModels, findModel } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
 
 export type ToolCallState = "pending" | "accepted" | "rejected";
@@ -148,7 +148,7 @@ function isStatusStep(block: Block): boolean {
 export function isActivityBlock(block: Block): boolean {
   if (isThinkingBlock(block)) return true;
   if (block.role === "system") {
-    return !block.interjection && !isNoticeBlock(block);
+    return !block.interjection && !block.shellRun && !isNoticeBlock(block);
   }
   if (block.role !== "tool" && block.role !== "approval") return false;
   if (
@@ -176,6 +176,10 @@ export function isToolBlock(block: Block): boolean {
 /** Assistant prose with something in it. */
 export function isProseBlock(block: Block): boolean {
   return block.role === "assistant" && !!block.text.trim();
+}
+
+export function hasReadableText(text: string): boolean {
+  return /[^\s\p{P}]/u.test(text);
 }
 
 /** First paragraph of a folded prose block, stripped to one plain line. */
@@ -349,7 +353,11 @@ function groupTranscriptTurns(
       }
       continue;
     }
-    if (block.role === "handoff" || block.monoHabit) {
+    if (
+      block.role === "handoff" ||
+      block.monoHabit ||
+      (block.shellRun && !block.shellRun.inTurn)
+    ) {
       if (current.length > 0) turns.push(current);
       turns.push([block]);
       current = [];
@@ -495,9 +503,11 @@ export function groupTurnItems(
     // is still going. Once the turn settles they are work like any other call
     // — except one that died: a failed run keeps its own row under the fold,
     // where it opens itself onto the reason rather than folding out of sight.
+    // A delegated session outlives the turn that started it, so it keeps its
+    // row too.
     if (
       isSubagentBlock(block) &&
-      (!settled || toolCallState(block) === "rejected")
+      (!settled || toolCallState(block) === "rejected" || !!block.delegation)
     ) {
       flush();
       const last = items[items.length - 1];
@@ -745,8 +755,9 @@ export function subagentModelName(block: Block): string | undefined {
   const id = block.agentRun?.model?.trim();
   if (!id || /^(?:auto|default|inherit|unspecified)$/i.test(id))
     return undefined;
+  // Providers report native ids, which the id index does not hold.
   return (
-    allModels().find((model) => model.id === id || model.nativeId === id)
+    (findModel(id) ?? allModels().find((model) => model.nativeId === id))
       ?.name ?? id
   );
 }
@@ -1084,8 +1095,9 @@ export function activityPhaseTitle(phase: ActivityPhase, live = false): string {
   if (failure) return failure;
   if (phase.headline) {
     const summary = proseSummary(phase.headline.text);
-    if (summary) return summary;
-    return phase.headline.role === "reasoning" ? "Thinking" : "Working";
+    if (hasReadableText(summary)) return summary;
+    if (!summary)
+      return phase.headline.role === "reasoning" ? "Thinking" : "Working";
   }
   return workSummaryLine(phase.steps, live);
 }

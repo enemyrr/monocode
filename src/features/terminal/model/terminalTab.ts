@@ -33,7 +33,7 @@ export function applyTerminalMeta(
   patch: TerminalMetaPatch,
 ): FilePaneTab {
   if (!file.terminal) return file;
-  const path = patch.title ?? file.path;
+  const path = file.profile ? file.path : (patch.title ?? file.path);
   const cwd = patch.cwd ?? file.cwd;
   const foreground =
     patch.foreground === undefined

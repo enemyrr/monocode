@@ -17,6 +17,7 @@ import {
   newSessionChangesTab,
   newTab,
   newTerminalFile,
+  newTerminalWorkspaceTab,
   splitPane,
 } from "./layout";
 import { createProjectTerminal } from "../../projects/model/projectTerminal";
@@ -674,6 +675,67 @@ describe("hydrateWorkspaceSnapshot", () => {
     );
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     expect(workspace?.tabs[0]?.terminalPanes[0]?.files[0]?.terminal).toBe(true);
+  });
+
+  it("restores a CLI profile terminal opened as a workspace tab", () => {
+    const tab = newTerminalWorkspaceTab(
+      newTerminalFile("/tmp/a/wt", undefined, "/tmp/a", "codex"),
+    );
+    const snapshot = parseWorkspaceSnapshot(
+      JSON.parse(
+        JSON.stringify(
+          collectWorkspaceSnapshot([tab], [], tab.id, "/tmp/a", new Map()),
+        ),
+      ),
+    );
+    const workspace = snapshot && hydrateWorkspaceSnapshot(snapshot, new Map());
+    expect(workspace?.activeTabId).toBe(tab.id);
+    expect(workspace?.tabs[0]).toMatchObject({
+      focusedId: tab.focusedId,
+      terminalPanes: [
+        {
+          files: [
+            {
+              path: "Codex",
+              cwd: "/tmp/a/wt",
+              projectCwd: "/tmp/a",
+              terminal: true,
+              profile: "codex",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("keeps a terminal's CLI profile and drops an unknown one", () => {
+    const claude = newTerminalFile("/tmp/a", undefined, undefined, "claude");
+    const raw = JSON.parse(
+      JSON.stringify(
+        collectWorkspaceSnapshot(
+          [{ ...newTab("s1"), id: "t1" }],
+          [],
+          "t1",
+          "/tmp/a",
+          new Map(),
+          [createProjectTerminal("/tmp/a", claude)],
+        ),
+      ),
+    );
+    raw.projectTerminals[0].pane.files.push({
+      ...newTerminalFile("/tmp/a"),
+      profile: "vim",
+    });
+    const snapshot = parseWorkspaceSnapshot(raw);
+    const workspace = snapshot && hydrateWorkspaceSnapshot(snapshot, new Map());
+    const [first, second] = workspace?.projectTerminals?.[0]?.pane.files ?? [];
+    expect(first).toMatchObject({
+      path: "Claude Code",
+      terminal: true,
+      profile: "claude",
+    });
+    expect(second?.terminal).toBe(true);
+    expect(second?.profile).toBeUndefined();
   });
 
   it("restores a project terminal dock", () => {

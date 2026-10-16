@@ -19,6 +19,15 @@ import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { updateSessionState } from "./model/sessionState";
+import { upsertShellRunBlock } from "../features/sessions/model/shell-command";
+import {
+  delegationBlock,
+  missingDelegatedChildren,
+  openDelegations,
+  undeliveredDelegations,
+  reconcileDelegations,
+  recordDelegation,
+} from "../features/sessions/model/delegated-sessions";
 import {
   handleAgentApp,
   canAccessAgentAppProject,
@@ -97,7 +106,7 @@ import {
   type MonoOverviewTab,
 } from "../features/monos/ui/MonoOverview";
 import { MonoSettingsDialog } from "../features/monos/ui/MonoSettingsDialog";
-import { MonoActivityPanel } from "../features/monos/ui/MonoActivityPanel";
+import { MonoActivityView } from "../features/monos/ui/MonoActivityView";
 import {
   launchedSessionState,
   monoSpawnedSessions,
@@ -136,6 +145,7 @@ import {
   renameWorktreeBranch,
   sessionInWorktree,
   temporaryWorktreeBranchName,
+  worktreeDeletedExternally,
   worktreeSessionIds,
   type Worktree,
 } from "../features/source-control/model/worktrees";
@@ -204,7 +214,6 @@ import {
   newTab,
   newTerminalFile,
   newTerminalWorkspaceTab,
-  nextTerminalTitle,
   openChangesTab,
   openCommitTab,
   newAgentTab,
@@ -213,7 +222,6 @@ import {
   pinEditorFile,
   openWorkspaceFile,
   previewWorkspaceFile,
-  openTerminalTab,
   removePane,
   resetTabToSession,
   replaceLeafId,
@@ -270,6 +278,14 @@ import {
   terminalTabLabel,
   type TerminalMetaPatch,
 } from "../features/terminal/model/terminalTab";
+import {
+  asTerminalProfileId,
+  type TerminalProfileId,
+} from "../features/terminal/model/terminal-profiles";
+import {
+  loadNewTabTarget,
+  newTabTerminal,
+} from "../features/settings/model/new-tab-target";
 import {
   applyHarnessEvent,
   applyHarnessEvents,
@@ -449,6 +465,7 @@ import {
   formatSessionTitle,
   sessionNeedsInput,
   newDefaultSession,
+  markTurnStopped,
   newSession,
   retargetSessionToProject,
   removeSessionDraft,
@@ -588,6 +605,7 @@ import {
   habitPostsContext,
   habitRunMono,
   isHabitRun,
+  noteHabitRunLaunch,
   relayApproval,
   takeRelayedApproval,
   loadHabits,
@@ -681,6 +699,7 @@ import { findRemoteSessionTab } from "../features/connections/model/remoteSessio
 import {
   remotePath,
   remoteProjectFor,
+  remoteSessionGitCwd,
 } from "../features/connections/model/remoteProjects";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
@@ -1016,6 +1035,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
       tab.fileFocused === other.fileFocused &&
       tab.blank === other.blank &&
       tab.terminal === other.terminal &&
+      tab.terminalProfile === other.terminalProfile &&
       tab.previewFileId === other.previewFileId &&
       tab.groupId === other.groupId
     );
@@ -1103,12 +1123,15 @@ function Workspace({
   const [monoOverviewOpen, setMonoOverviewOpen] = useState(true);
   const [monoOverviewTab, setMonoOverviewTab] =
     useState<MonoOverviewTab>("sessions");
+  const monoOverviewOpenRef = useRef(monoOverviewOpen);
+  monoOverviewOpenRef.current = monoOverviewOpen;
+  const monoOverviewTabRef = useRef(monoOverviewTab);
+  monoOverviewTabRef.current = monoOverviewTab;
   // The Mono whose settings dialog is open; another Mono's view closes it.
   const [monoSettingsFor, setMonoSettingsFor] = useState<string | null>(null);
   // A document opened from the chat shows on the overview's Documents tab,
   // the same page the tab opens it on.
   const onOpenMonoArtifact = useCallback((_sessionId: string, id: string) => {
-    setMonoActivity(null);
     setMonoShownSession(null);
     setMonoOverviewDocument(id);
     setMonoOverviewTab("documents");
@@ -1157,11 +1180,20 @@ function Workspace({
       : undefined;
   const shownMonoSessionIdRef = useRef(shownMonoSessionId);
   shownMonoSessionIdRef.current = shownMonoSessionId;
+  // A turn's activity shows on the overview's Activity tab; picking the shown
+  // one again clears it.
   const onShowMonoActivity = useCallback(
     (sessionId: string, turnId: string, blocks: Block[]) => {
-      setMonoOverviewOpen(false);
+      const shown =
+        monoOverviewOpenRef.current && monoOverviewTabRef.current === "activity";
+      setMonoShownSession(null);
+      setMonoOverviewDocument(null);
+      setMonoOverviewTab("activity");
+      setMonoOverviewOpen(true);
       setMonoActivity((previous) =>
-        previous?.sessionId === sessionId && previous.turnId === turnId
+        shown &&
+        previous?.sessionId === sessionId &&
+        previous.turnId === turnId
           ? null
           : { sessionId, turnId, blocks },
       );
@@ -1619,7 +1651,9 @@ function Workspace({
                 const events = batches.get(session.id);
                 return events ? applyHarnessEvents(session, events) : session;
               });
-              return updated.some((session, index) => session !== current[index])
+              return updated.some(
+                (session, index) => session !== current[index],
+              )
                 ? updated
                 : current;
             },
@@ -1930,17 +1964,33 @@ function Workspace({
       ? active.branch || gitCwdBranches?.current || undefined
       : undefined;
   const remoteFilesProject = remoteProjectFor(sidebarCwd);
+  // The host checkout the remote tab is aimed at — the attached session's
+  // work path or a worktree picked before the first message.
+  const remoteTabCheckout = remoteFilesProject
+    ? remoteTabCwd(sidebarCwd, active?.id)
+    : undefined;
   const filesCwd = remoteFilesProject
     ? isRemoteProjectPath(gitCwd)
       ? gitCwd
       : remotePath(
           remoteFilesProject.environmentId,
-          remoteTabCwd(sidebarCwd, active?.id) ??
+          remoteTabCheckout ??
             (gitCwd && gitCwd !== sidebarCwd ? gitCwd : remoteFilesProject.cwd),
         )
     : gitCwd;
-  const gitCwdRef = useRef(filesCwd);
-  gitCwdRef.current = filesCwd;
+  // Git follows the session's own work path (a linked worktree included),
+  // never the terminal-following files cwd: a remote session working in a
+  // separate worktree diffed the main checkout and showed "No file changes".
+  const gitRootCwd = remoteFilesProject
+    ? remoteSessionGitCwd(
+        remoteFilesProject,
+        gitCwd,
+        sidebarCwd,
+        remoteTabCheckout,
+      )
+    : gitCwd;
+  const gitCwdRef = useRef(gitRootCwd);
+  gitCwdRef.current = gitRootCwd;
   const projectBranches = useProjectBranches(
     sidebarCwd,
     Boolean(sidebarCwd) && sidebarCwd !== "~",
@@ -2644,7 +2694,8 @@ function Workspace({
         return;
       }
 
-      const currentId = current.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
+      const currentId =
+        current.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
       if (currentId === accountId) return;
 
       // Provider thread ids are account-owned. Keep the current conversation
@@ -2826,6 +2877,14 @@ function Workspace({
     return () => window.removeEventListener(ADD_NOTE_TO_CHAT_EVENT, onAdd);
   }, [onAddNoteToChat]);
 
+  const onShellRunBlock = useCallback((sessionId: string, block: Block) => {
+    updateSessionState(sessionsRef, setSessions, (sessions) =>
+      sessions.map((session) =>
+        session.id === sessionId ? upsertShellRunBlock(session, block) : session,
+      ),
+    );
+  }, []);
+
   const onInboxCardDismiss = useCallback((sessionId: string) => {
     setSessions((prev) =>
       prev.map((session) =>
@@ -2915,7 +2974,7 @@ function Workspace({
   }, []);
 
   const openProjectTerminal = useCallback(
-    (cwd: string) => {
+    (cwd: string, profile?: TerminalProfileId) => {
       const workdir = cwd || projectCwdRef.current;
       const projectPath = projectCwdRef.current;
       if (!isLocalProject(projectPath)) return false;
@@ -2925,6 +2984,7 @@ function Workspace({
           workdir,
           existing ? nextDockTerminalTitle(existing, workdir) : undefined,
           projectPath,
+          profile,
         );
         if (!existing) {
           return [
@@ -2947,88 +3007,59 @@ function Workspace({
   );
 
   const onOpenTerminal = useCallback(
-    (cwd: string, asWorkspaceTab = false, occupySessionId?: string) => {
+    (
+      cwd: string,
+      placement: "dock" | "tab" = "dock",
+      profile?: TerminalProfileId,
+    ) => {
       const workdir = cwd || terminalCwd;
       if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir))
-        return;
-      if (openProjectTerminal(workdir)) return;
-
-      if (asWorkspaceTab || !activeTab) {
-        const file = newTerminalFile(workdir, undefined, sidebarCwd);
-        const tab = newTerminalWorkspaceTab(file);
-        appendTab(tab, sidebarCwd);
-        setActiveTabId(tab.id);
-        setComposerFocused(false);
-        return;
-      }
-
-      const occupying = sessionsRef.current.find(
-        (session) => session.id === (occupySessionId ?? activeTab.focusedId),
+        return false;
+      if (placement === "dock") return openProjectTerminal(workdir, profile);
+      const tab = newTerminalWorkspaceTab(
+        newTerminalFile(workdir, undefined, sidebarCwd, profile),
       );
-      const occupyPaneId =
-        occupying && isBlankSession(occupying) ? occupying.id : undefined;
-      if (occupyPaneId && occupying) {
-        lastPersisted.current.delete(occupyPaneId);
-        void forgetHarnessSession(occupying.harness, occupyPaneId);
-        setSessions((prev) =>
-          prev.filter((session) => session.id !== occupyPaneId),
-        );
-      }
-
-      const file = newTerminalFile(
-        workdir,
-        nextTerminalTitle(activeTab, workdir),
-        sidebarCwd,
-      );
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.id === activeTab.id
-            ? openTerminalTab(tab, file, occupyPaneId)
-            : tab,
-        ),
-      );
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      appendTab(tab, sidebarCwd);
+      setActiveTabId(tab.id);
+      setProjectTerminalFocused(false);
       setComposerFocused(false);
+      return true;
     },
-    [terminalCwd, activeTab, appendTab, openProjectTerminal, sidebarCwd],
+    [terminalCwd, appendTab, openProjectTerminal, sidebarCwd],
   );
 
   const onNewTerminal = useCallback(() => {
     onOpenTerminal(terminalCwd);
   }, [terminalCwd, onOpenTerminal]);
 
-  const onShowProjectTerminal = useCallback(() => {
-    leaveCoveringMono();
-    const dock = findProjectTerminal(projectTerminalsRef.current, projectCwd);
-    if (dock && dock.pane.files.length > 0) {
-      if (!dock.open) {
-        setProjectTerminals((prev) =>
-          mapProjectTerminal(prev, projectCwd, (entry) =>
-            withDockOpen(entry, true),
-          ),
-        );
-      }
-      focusProjectTerminal();
-      return;
-    }
-    onOpenTerminal(terminalCwd);
-  }, [
-    terminalCwd,
-    focusProjectTerminal,
-    leaveCoveringMono,
-    onOpenTerminal,
-    projectCwd,
-  ]);
+  const onNewProfileTerminal = useCallback(
+    (profile: TerminalProfileId) => {
+      onOpenTerminal(terminalCwd, "tab", profile);
+    },
+    [terminalCwd, onOpenTerminal],
+  );
+
+  const onNewDockProfileTerminal = useCallback(
+    (profile: TerminalProfileId) => {
+      onOpenTerminal(terminalCwd, "dock", profile);
+    },
+    [terminalCwd, onOpenTerminal],
+  );
 
   const onNewTerminalInSession = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, profile?: TerminalProfileId) => {
       const session = sessionsRef.current.find(
         (entry) => entry.id === sessionId,
       );
       if (session?.worktreeRemoved) return;
       onOpenTerminal(
         session ? sessionWorkCwd(session) : projectCwd,
-        false,
-        sessionId,
+        profile ? "tab" : "dock",
+        profile,
       );
     },
     [onOpenTerminal, projectCwd],
@@ -3225,7 +3256,7 @@ function Workspace({
   );
 
   const onNewTerminalTab = useCallback(() => {
-    onOpenTerminal(terminalCwd, true);
+    onOpenTerminal(terminalCwd, "tab");
   }, [terminalCwd, onOpenTerminal]);
 
   const onCloseTab = useCallback(
@@ -3565,7 +3596,7 @@ function Workspace({
   }, []);
 
   const onClearTabSession = useCallback(
-    (id: string) => {
+    (id: string, opts?: { confirmed?: boolean }) => {
       const tab = tabs.find((entry) => entry.id === id);
       if (!tab || isBlankWorkspaceTab(tab, sessionsRef.current)) return;
 
@@ -3645,7 +3676,8 @@ function Workspace({
         void refreshHistory(sidebarCwd);
       };
 
-      if (unsaved.length === 0) {
+      // The caller already confirmed unsaved files.
+      if (unsaved.length === 0 || opts?.confirmed) {
         finishClear();
         return;
       }
@@ -3677,23 +3709,97 @@ function Workspace({
     [onClearTabSession, onCloseTab, tabCloseScope],
   );
 
+  const seedSession = useCallback((cwd: string) => {
+    const seed = sessionsRef.current[0];
+    return newSession(
+      seed?.harness ?? "claude",
+      cwd,
+      seed?.model,
+      seed?.runtimeMode,
+      seed?.modelSettings,
+    );
+  }, []);
+
+  // The workspace always keeps one tab, so close every other tab and reset
+  // the active one to a blank session. `scope` limits this to those tabs,
+  // such as the ones the title bar shows. Every confirmation runs before
+  // any tab changes, so a cancelled prompt leaves all tabs.
+  const onCloseEveryTab = useCallback(
+    (scope?: readonly string[]) => {
+      const inScope = scope ? new Set(scope) : null;
+      const tab = tabsRef.current.find(
+        (entry) => entry.id === activeTabIdRef.current,
+      );
+      if (!tab || (inScope && !inScope.has(tab.id))) return;
+
+      const otherIds = tabsRef.current
+        .filter((entry) => entry.id !== tab.id)
+        .filter((entry) => !inScope || inScope.has(entry.id))
+        .map((entry) => entry.id);
+      const keptFiles = [
+        ...tab.editorPanes.flatMap((pane) => pane.files),
+        ...(tab.terminalPanes ?? []).flatMap((pane) => pane.files),
+      ];
+      const closingFiles = [
+        ...tabsRef.current
+          .filter((entry) => otherIds.includes(entry.id))
+          .flatMap((entry) => [
+            ...entry.editorPanes.flatMap((pane) => pane.files),
+            ...(entry.terminalPanes ?? []).flatMap((pane) => pane.files),
+          ]),
+        ...keptFiles,
+      ];
+      const unsaved = closingFiles.filter(
+        (file) => isFilesystemTab(file) && dirtyFilesRef.current.has(file.id),
+      );
+      const terminals = closingFiles.filter((file) => file.terminal);
+
+      void (async () => {
+        if (unsaved.length > 0) {
+          const ok = await confirmDiscardUnsaved(
+            "Close all tabs with unsaved files?",
+          );
+          if (!ok) return;
+        }
+        if (terminals.length > 0) {
+          const ok = await confirmCloseTerminals(terminals);
+          if (!ok) return;
+        }
+        if (otherIds.length > 0) {
+          onCloseTabs(otherIds, tab.id, { confirmed: true });
+        }
+        const hasSession = leafIds(tab.layout).some((paneId) =>
+          sessionsRef.current.some((session) => session.id === paneId),
+        );
+        if (hasSession) {
+          onClearTabSession(tab.id, { confirmed: true });
+          return;
+        }
+        // The tab held no session: seed one so the workspace stays usable.
+        const session = seedSession(keptFiles[0]?.cwd || projectCwd);
+        setSessions((prev) => [...prev, session]);
+        setDirtyFiles((prev) => {
+          const updated = new Set(prev);
+          for (const file of keptFiles) updated.delete(file.id);
+          return updated;
+        });
+        setTabs((prev) =>
+          prev.map((entry) =>
+            entry.id === tab.id ? resetTabToSession(entry, session.id) : entry,
+          ),
+        );
+        setComposerFocused(true);
+      })();
+    },
+    [onCloseTabs, onClearTabSession, projectCwd, seedSession],
+  );
+
   const onCloseAllTabs = useCallback(() => {
     closeMonoView();
     const tab = tabsRef.current.find(
       (entry) => entry.id === activeTabIdRef.current,
     );
     if (!tab) return;
-
-    const seedSession = (cwd: string) => {
-      const seed = sessionsRef.current[0];
-      return newSession(
-        seed?.harness ?? "claude",
-        cwd,
-        seed?.model,
-        seed?.runtimeMode,
-        seed?.modelSettings,
-      );
-    };
 
     // Stage one: files open in the active tab's editor panes close first.
     // Only when none are open does the command close every workspace tab.
@@ -3755,62 +3861,9 @@ function Workspace({
       return;
     }
 
-    // Stage two: the workspace always keeps one tab, so close every other
-    // tab and reset the active one to a blank session. Every confirmation
-    // runs before any tab changes, so a cancelled prompt leaves all tabs.
-    const otherIds = tabsRef.current
-      .filter((entry) => entry.id !== tab.id)
-      .map((entry) => entry.id);
-    const terminalFiles = (tab.terminalPanes ?? []).flatMap(
-      (pane) => pane.files,
-    );
-    const closingFiles = [
-      ...tabsRef.current
-        .filter((entry) => otherIds.includes(entry.id))
-        .flatMap((entry) => [
-          ...entry.editorPanes.flatMap((pane) => pane.files),
-          ...(entry.terminalPanes ?? []).flatMap((pane) => pane.files),
-        ]),
-      ...terminalFiles,
-    ];
-    const unsaved = closingFiles.filter(
-      (file) => isFilesystemTab(file) && dirtyFilesRef.current.has(file.id),
-    );
-    const terminals = closingFiles.filter((file) => file.terminal);
-
-    void (async () => {
-      if (unsaved.length > 0) {
-        const ok = await confirmDiscardUnsaved(
-          "Close all tabs with unsaved files?",
-        );
-        if (!ok) return;
-      }
-      if (terminals.length > 0) {
-        const ok = await confirmCloseTerminals(terminals);
-        if (!ok) return;
-      }
-      if (otherIds.length > 0) {
-        onCloseTabs(otherIds, tab.id, { confirmed: true });
-      }
-      const hasSession = leafIds(tab.layout).some((paneId) =>
-        sessionsRef.current.some((session) => session.id === paneId),
-      );
-      if (hasSession) {
-        // No editor files remain, so this commits without a prompt.
-        onClearTabSession(tab.id);
-        return;
-      }
-      // The tab held no session: seed one so the workspace stays usable.
-      const session = seedSession(terminalFiles[0]?.cwd || projectCwd);
-      setSessions((prev) => [...prev, session]);
-      setTabs((prev) =>
-        prev.map((entry) =>
-          entry.id === tab.id ? resetTabToSession(entry, session.id) : entry,
-        ),
-      );
-      setComposerFocused(true);
-    })();
-  }, [onCloseTab, onCloseTabs, onClearTabSession, projectCwd, tabCloseScope]);
+    // Stage two: no files are open, so close every workspace tab.
+    onCloseEveryTab();
+  }, [onCloseEveryTab, onCloseTab, projectCwd, seedSession, tabCloseScope]);
 
   const onClosePane = useCallback(
     (sessionId?: string) => {
@@ -3891,11 +3944,18 @@ function Workspace({
     );
   }, []);
 
+  /** Opens what "New tab opens" names; a remote project falls back to a chat. */
+  const onNewTab = useCallback(() => {
+    const terminal = newTabTerminal(loadNewTabTarget());
+    if (!terminal || !onOpenTerminal(terminalCwd, "tab", terminal.profile))
+      onNew();
+  }, [onNew, onOpenTerminal, terminalCwd]);
+
   /** ⌘T / Ctrl+T: add a dock terminal while the dock has focus, else a tab. */
   const onNewFocused = useCallback(() => {
     if (focusedDockTerminal()) onNewTerminal();
-    else onNew();
-  }, [focusedDockTerminal, onNew, onNewTerminal]);
+    else onNewTab();
+  }, [focusedDockTerminal, onNewTab, onNewTerminal]);
 
   /** ⌘W / Ctrl+W: close the focused dock terminal, else the focused pane. */
   const onCloseFocused = useCallback(() => {
@@ -4142,7 +4202,6 @@ function Workspace({
   // A Mono view covers the workspace, so its session changes open on the
   // overview's Changes tab instead of in a project tab hidden behind it.
   const openMonoChanges = useCallback((request: MonoChangesRequest) => {
-    setMonoActivity(null);
     setMonoShownSession(null);
     setMonoOverviewDocument(null);
     setMonoChangesRequest(request);
@@ -4894,7 +4953,6 @@ function Workspace({
       // from what it shows to this session, never through the list.
       const session = await ensureOpenSession(launchedId).catch(() => null);
       if (monoViewIdRef.current !== monoSessionId) return;
-      setMonoActivity(null);
       setMonoOverviewTab("sessions");
       setMonoOverviewDocument(null);
       setMonoOverviewOpen(true);
@@ -5258,6 +5316,36 @@ function Workspace({
     ],
   );
 
+  // Stops a parent's working children and lists them in the sidebar again.
+  const releaseDelegatedChildren = useCallback(
+    async (parent: Session) => {
+      const working = new Set(
+        openDelegations(parent).map((link) => link.sessionId),
+      );
+      await Promise.all(
+        undeliveredDelegations(parent).map(async ({ sessionId: id }) => {
+          const child = await ensureOpenSession(id).catch(() => null);
+          if (!child) return;
+          if (working.has(id) && child.busy)
+            await Promise.resolve(stopSessionRef.current(id)).catch(
+              () => undefined,
+            );
+          const reveal = (sessions: Session[]) =>
+            sessions.map((session) =>
+              session.id === id
+                ? { ...session, sidebarHidden: undefined }
+                : session,
+            );
+          sessionsRef.current = reveal(sessionsRef.current);
+          setSessions(reveal);
+          const current = sessionsRef.current.find((s) => s.id === id);
+          if (current) persistSession(current);
+        }),
+      );
+    },
+    [ensureOpenSession, persistSession],
+  );
+
   const onRemoveHistorySession = useCallback(
     async (
       sessionId: string,
@@ -5318,6 +5406,9 @@ function Workspace({
           if (choice.deleteWorktree) deleteWorktreePath = unusedWorktree;
         }
       }
+      // Its hidden children would keep working with no one to report to.
+      const parent = open ?? (await getSession(sessionId).catch(() => null));
+      if (parent) await releaseDelegatedChildren(parent);
       invalidateLoadedSession(sessionId);
       pendingPersist.current.delete(sessionId);
       try {
@@ -5483,6 +5574,7 @@ function Workspace({
       history,
       invalidateLoadedSession,
       refreshHistory,
+      releaseDelegatedChildren,
       sidebarCwd,
       stopSessionForRemoval,
       tabCloseScope,
@@ -6978,9 +7070,10 @@ function Workspace({
       const rawCommand =
         !operatorCommand.matched &&
         isNativeCommandPrompt(submittedText, current.harness);
-      const ciContext = options?.ciRepair?.prompt ?? options?.ciContext;
+      const instructions = options?.ciRepair?.prompt ?? options?.instructions;
+      const ciContext = instructions ?? options?.ciContext;
       const harnessText =
-        options?.ciRepair?.prompt ??
+        instructions ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch = pendingComposerSwitch(current);
@@ -7113,7 +7206,8 @@ function Workspace({
           current.worktreePreparing ||
           intent === "plan" ||
           intent === "orchestrate" ||
-          operatorCommand.matched
+          operatorCommand.matched ||
+          (options?.instructions && !options.queuedMessageId)
             ? "queue"
             : // The agent has yielded and only background work is left, which
               // may never end (a dev server). Queuing would park the message
@@ -7142,6 +7236,9 @@ function Workspace({
                         id: crypto.randomUUID(),
                         text,
                         attachments,
+                        ...(options?.instructions
+                          ? { instructions: options.instructions }
+                          : {}),
                         noteCard,
                         handoffCard,
                         intent,
@@ -8005,7 +8102,7 @@ function Workspace({
           if (operatorCommand.matched || handAgent) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
             appContext.push(
-              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`,
+              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.${handAgent ? "" : " To run work on another agent (for example Codex or Claude), use sessions.delegate instead of running its CLI in a shell. The child appears as a subagent of this turn, and its final answer comes back to you as a MonoCode notification once it finishes, so do not poll it."}\n</monocode_app>`,
             );
           }
           // A Mono reads who it is ahead of the message, so it never takes it
@@ -8045,16 +8142,18 @@ function Workspace({
           }
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) {
-            setSessions((prev) =>
-              prev.map((s) => {
-                if (s.id !== sessionId) return s;
-                const ready = isPreparingHandoff(s)
-                  ? completeHandoff(s, wrap.text)
-                  : s;
-                // A command owns its arguments; deliver the recap with the next chat prompt.
-                return rawCommand ? ready : consumeHandoff(ready);
-              }),
-            );
+            // Settle the ref too: the flush in `finally` rebuilds sessions from
+            // it, and a stale ref would drop the consumed flag and resend the
+            // recap with every later turn.
+            sessionsRef.current = sessionsRef.current.map((s) => {
+              if (s.id !== sessionId) return s;
+              const ready = isPreparingHandoff(s)
+                ? completeHandoff(s, wrap.text)
+                : s;
+              // A command owns its arguments; deliver the recap with the next chat prompt.
+              return rawCommand ? ready : consumeHandoff(ready);
+            });
+            setSessions(sessionsRef.current);
           }
           buildSucceeded = true;
         } catch (error: unknown) {
@@ -8134,6 +8233,27 @@ function Workspace({
                 : finalized;
             }),
           );
+          // A worktree removed outside the app fails every turn. Detach the
+          // session as an in-app removal would, so it can pick a new checkout.
+          const worktreePath = current.worktreeCwd;
+          if (providerFailureSeen && worktreePath) {
+            void worktreeDeletedExternally(worktreePath)
+              .then((deleted) => {
+                if (!deleted || switchingWorktrees.current.has(sessionId))
+                  return;
+                // Through the ref too, or a pending event flush puts it back.
+                sessionsRef.current = sessionsRef.current.map((s) =>
+                  s.id === sessionId &&
+                  !s.busy &&
+                  !s.worktreeRemoved &&
+                  s.worktreeCwd === worktreePath
+                    ? detachSessionWorktree(s, s.cwd, worktreePath)
+                    : s,
+                );
+                setSessions(sessionsRef.current);
+              })
+              .catch(() => undefined);
+          }
           // Next tick: the flush above has rendered by then, so the banner
           // quotes the reply's final text rather than the previous batch.
           window.setTimeout(() => {
@@ -8189,6 +8309,15 @@ function Workspace({
         .finally(() => {
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
+          // A turn cut short without onStop, for example by a removal.
+          if (turnGen.current.get(sessionId) !== gen)
+            setSessions((prev) =>
+              prev.map((session) =>
+                session.id === sessionId && !session.busy
+                  ? markTurnStopped(session)
+                  : session,
+              ),
+            );
           options?.onSettled?.(
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
@@ -8305,7 +8434,7 @@ function Workspace({
       );
       setSessions(sessionsRef.current);
     },
-    post: (monoId, habit, text, name, artifacts) =>
+    post: (monoId, habit, text, name, artifacts, launches) =>
       appendToMono(
         monoId,
         {
@@ -8314,6 +8443,7 @@ function Workspace({
           text,
           monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
           ...(artifacts?.length ? { artifactCards: artifacts } : {}),
+          ...(launches?.length ? { monoSpawnedSessions: launches } : {}),
         },
         (posted) => {
           monoReplies.noteReply(monoId);
@@ -8867,6 +8997,7 @@ function Workspace({
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
                 handoffCard: head.handoffCard,
+                instructions: head.instructions,
                 intent: head.intent,
                 ...(head.monoSessionCompletion
                   ? {
@@ -9023,6 +9154,7 @@ function Workspace({
         queuedMessageId: message.id,
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
+        instructions: message.instructions,
         intent: message.intent,
       });
     },
@@ -10072,12 +10204,16 @@ function Workspace({
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
-          const stopped = stopStreaming(s);
+          // Marked on the turn itself, so a stop never reads as an answer.
+          const stopped = stopStreaming(s.busy ? markTurnStopped(s) : s);
           const completed = isPreparingHandoff(stopped)
             ? completeHandoff(stopped, buildDeterministicHandoff(stopped))
             : stopped;
           const ready = { ...completed, worktreePreparing: undefined };
-          return ready.queuedMessages?.length
+          // App notifications are not the user's to hold back after a stop.
+          return ready.queuedMessages?.some(
+            (message) => !message.monoSessionCompletion,
+          )
             ? { ...ready, queueStatus: "paused" }
             : ready;
         }),
@@ -10610,6 +10746,32 @@ function Workspace({
     orchestrator.sync();
   }, [sessions]);
 
+  // Delegated children update their parent's row and, once they answer,
+  // queue the answer as the parent's next turn.
+  const delegationLoads = useRef(new Set<string>());
+  // Children that could not be loaded, so their rows fail rather than wait.
+  const goneDelegations = useRef(new Set<string>());
+  useEffect(() => {
+    const gone = goneDelegations.current;
+    if (reconcileDelegations(sessions, gone) !== sessions)
+      setSessions((previous) => reconcileDelegations(previous, gone));
+    // One that is open again may be tried again once it next goes missing.
+    for (const id of delegationLoads.current)
+      if (sessions.some((session) => session.id === id))
+        delegationLoads.current.delete(id);
+    for (const id of missingDelegatedChildren(sessions)) {
+      if (delegationLoads.current.has(id) || gone.has(id)) continue;
+      delegationLoads.current.add(id);
+      void ensureOpenSessionRef.current(id)
+        .catch(() => null)
+        .then((child) => {
+          if (child) return;
+          gone.add(id);
+          setSessions((previous) => reconcileDelegations(previous, gone));
+        });
+    }
+  }, [sessions]);
+
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -10663,6 +10825,12 @@ function Workspace({
           : [];
         const sourceTurnId = sourceTurns[sourceTurns.length - 1]?.[0]?.id;
         const rememberSession = (entry: MonoSpawnedSession) => {
+          // A habit run is thrown away when it ends; its launches go on the
+          // report it posts to the Mono's chat instead.
+          if (isHabitRun(source.id)) {
+            noteHabitRunLaunch(source.id, entry);
+            return;
+          }
           if (!sourceTurnId) return;
           const next = sessionsRef.current.map((session) =>
             session.id === source.id
@@ -10721,82 +10889,127 @@ function Workspace({
             ),
           );
         };
+        const recordDelegatedChild = (block: Block) => {
+          const record = (sessions: Session[]) =>
+            sessions.map((session) =>
+              session.id === source.id
+                ? recordDelegation(session, block)
+                : session,
+            );
+          sessionsRef.current = record(sessionsRef.current);
+          setSessions(record);
+        };
+        const startSession = async (
+          launch: QuickLaunch,
+          id: string,
+          placement?: AppSessionPlacement,
+          notifyMonoId?: string,
+          /** Set for sessions.delegate: the parent row's name. */
+          delegationTitle?: string,
+        ) => {
+          const rememberLaunch = () => {
+            const created =
+              sessionsRef.current.find((session) => session.id === id) ??
+              existing;
+            if (delegationTitle) {
+              recordDelegatedChild(
+                delegationBlock({
+                  sessionId: id,
+                  title: delegationTitle,
+                  harness: created?.harness ?? launch.harness,
+                  model:
+                    created?.model ??
+                    resolveModel(launch.harness, launch.model).id,
+                }),
+              );
+              return;
+            }
+            rememberSession({
+              sessionId: id,
+              cwd: created?.cwd ?? launch.cwd,
+              title: created?.title ?? launch.prompt.trim().slice(0, 300),
+              harness: created?.harness ?? launch.harness,
+              model:
+                created?.model ??
+                resolveModel(launch.harness, launch.model).id,
+            });
+          };
+          const open = sessionsRef.current.find(
+            (session) => session.id === id,
+          );
+          const stored = open ? null : await getSession(id);
+          const existing = open ?? stored;
+          // A retried delegate may only find the child this parent made.
+          if (
+            delegationTitle &&
+            existing &&
+            existing.delegatedBy?.sessionId !== source.id
+          )
+            throw new Error(
+              "Request ID was already used for another session launch",
+            );
+          const previous = existing?.blocks.find(
+            (block) => block.appRequestId === id,
+          );
+          if (previous) {
+            if (
+              previous.text !== launch.prompt ||
+              (!launch.draft && !!previous.draft)
+            )
+              throw new Error(
+                "Request ID was already used for another session launch",
+              );
+            rememberLaunch();
+            return;
+          }
+          if (
+            existing?.blocks.some(
+              (block) => block.role === "user" && !block.draft,
+            )
+          ) {
+            rememberLaunch();
+            return;
+          }
+          if (existing && sessionDraftBlock(existing))
+            throw new Error("Session ID already has a different draft");
+          const onSettled = notifyMonoId
+            ? monitorCompletion(
+                notifyMonoId,
+                id,
+                id,
+                launch.cwd,
+                launch.prompt,
+              )
+            : undefined;
+          try {
+            // A Mono's sessions open from its chat, not as workspace
+            // tabs, unless it places one beside an open pane. A
+            // delegated child opens from its parent's subagent row.
+            await launchQuickSessionRef.current(
+              launch,
+              id,
+              placement,
+              onSettled,
+              !launch.delegatedBy &&
+                (!isMonoSession(source.id) || !!placement),
+            );
+            rememberLaunch();
+            onSettled?.accept();
+          } catch (error) {
+            onSettled?.discard();
+            throw error;
+          }
+        };
         const promise = handleAgentApp(
           source,
           payload.requestId,
           payload.action,
           payload.input,
           {
-            start: async (launch, id, placement, notifyMonoId) => {
-              const rememberLaunch = () => {
-                const created =
-                  sessionsRef.current.find((session) => session.id === id) ??
-                  existing;
-                rememberSession({
-                  sessionId: id,
-                  cwd: created?.cwd ?? launch.cwd,
-                  title: created?.title ?? launch.prompt.trim().slice(0, 300),
-                  harness: created?.harness ?? launch.harness,
-                  model:
-                    created?.model ??
-                    resolveModel(launch.harness, launch.model).id,
-                });
-              };
-              const open = sessionsRef.current.find(
-                (session) => session.id === id,
-              );
-              const stored = open ? null : await getSession(id);
-              const existing = open ?? stored;
-              const previous = existing?.blocks.find(
-                (block) => block.appRequestId === id,
-              );
-              if (previous) {
-                if (
-                  previous.text !== launch.prompt ||
-                  (!launch.draft && !!previous.draft)
-                )
-                  throw new Error(
-                    "Request ID was already used for another session launch",
-                  );
-                rememberLaunch();
-                return;
-              }
-              if (
-                existing?.blocks.some(
-                  (block) => block.role === "user" && !block.draft,
-                )
-              ) {
-                rememberLaunch();
-                return;
-              }
-              if (existing && sessionDraftBlock(existing))
-                throw new Error("Session ID already has a different draft");
-              const onSettled = notifyMonoId
-                ? monitorCompletion(
-                    notifyMonoId,
-                    id,
-                    id,
-                    launch.cwd,
-                    launch.prompt,
-                  )
-                : undefined;
-              try {
-                // A Mono's sessions open from its chat, not as workspace
-                // tabs, unless it places one beside an open pane.
-                await launchQuickSessionRef.current(
-                  launch,
-                  id,
-                  placement,
-                  onSettled,
-                  !isMonoSession(source.id) || !!placement,
-                );
-                rememberLaunch();
-                onSettled?.accept();
-              } catch (error) {
-                onSettled?.discard();
-                throw error;
-              }
-            },
+            start: (launch, id, placement, notifyMonoId) =>
+              startSession(launch, id, placement, notifyMonoId),
+            delegate: (launch, id, title) =>
+              startSession(launch, id, undefined, undefined, title),
             sessions: async (cwd): Promise<AppSessionListing[]> => {
               const stored = await listSessionsByProject(cwd);
               const byId = new Map<string, AppSessionListing>();
@@ -11909,6 +12122,7 @@ function Workspace({
   );
 
   const actions = useRef({
+    onNew,
     onNewFocused,
     onArchiveFocusedSession,
     onCloseOtherTabs,
@@ -11933,6 +12147,7 @@ function Workspace({
     onOpenNotes,
     pickProject,
     onNewTerminal,
+    onNewProfileTerminal,
     onNewTerminalTab,
     onToggleProjectTerminal,
     onNavigateSessionList,
@@ -11941,6 +12156,7 @@ function Workspace({
     onOpenApprovalSession,
   });
   actions.current = {
+    onNew,
     onNewFocused,
     onArchiveFocusedSession,
     onCloseOtherTabs,
@@ -11965,6 +12181,7 @@ function Workspace({
     onOpenNotes,
     pickProject,
     onNewTerminal,
+    onNewProfileTerminal,
     onNewTerminalTab,
     onToggleProjectTerminal,
     onNavigateSessionList,
@@ -12163,7 +12380,9 @@ function Workspace({
         e.preventDefault();
         e.stopPropagation();
         const a = actions.current;
-        if (shortcut === "App: New Window")
+        if (shortcut === "App: New Session")
+          run("new-session", a.onNew);
+        else if (shortcut === "App: New Window")
           run("new_window", () => void invoke("open_new_window"));
         else if (shortcut === "App: Open Project")
           run("open_project", () => void a.pickProject());
@@ -12193,6 +12412,7 @@ function Workspace({
   useEffect(() => {
     const unlisten: Array<Promise<() => void>> = [
       listen("new_tab", () => run("new", actions.current.onNewFocused)),
+      listen("new_session", () => run("new-session", actions.current.onNew)),
       listen("close_other_tabs", () =>
         run("close-others", actions.current.onCloseOtherTabs),
       ),
@@ -12224,6 +12444,13 @@ function Workspace({
       listen("new_terminal_tab", () =>
         run("new-terminal-tab", actions.current.onNewTerminalTab),
       ),
+      listen<string>("new_terminal_profile", ({ payload }) => {
+        const profile = asTerminalProfileId(payload);
+        if (profile)
+          run(`new-terminal-${profile}`, () =>
+            actions.current.onNewProfileTerminal(profile),
+          );
+      }),
       listen("toggle_terminal", () =>
         run("toggle-terminal", actions.current.onToggleProjectTerminal),
       ),
@@ -12431,6 +12658,8 @@ function Workspace({
     onQueuedMessageEditingChange,
     onSteerQueuedMessage,
     onResumeQueue,
+    onOpenDelegatedSession: (sessionId: string) =>
+      void onSelectHistorySession(sessionId),
     onUsageLimitResume,
     onUsageLimitResumeAtReset,
     onUsageLimitDismiss,
@@ -12457,6 +12686,8 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
+    onNewSession: onNew,
+    onShellRunBlock,
   };
 
   // Renames, mascot picks and new projects show up on the rail.
@@ -12465,7 +12696,11 @@ function Workspace({
     monoActivity,
     monoViewSession,
   );
-  const monoSidebarOpen = monoOverviewOpen || !!selectedMonoActivity;
+  // The chat marks the turn whose activity the overview is showing.
+  const monoActivityShownTurnId =
+    monoOverviewOpen && monoOverviewTab === "activity"
+      ? selectedMonoActivity?.turnId
+      : undefined;
   const monoViewBlocks = monoViewSession?.blocks;
   const monoViewBusy = !!monoViewSession?.busy;
   const monoViewCwd = monoViewSession ? sessionWorkCwd(monoViewSession) : "";
@@ -12494,17 +12729,13 @@ function Workspace({
     () => (monoViewBlocks ? artifactCards(monoViewBlocks) : []),
     [monoViewBlocks],
   );
-  // Another sidebar opened over it hides the overview until that one closes.
-  const monoOverviewShown = monoOverviewOpen && !selectedMonoActivity;
-  const monoActivityPanel =
-    monoViewMono && monoViewSession && selectedMonoActivity ? (
-      <MonoActivityPanel
-        key={`${monoViewMono.id}:${selectedMonoActivity.turnId}`}
-        agent={monoLook(monoViewMono)}
+  const monoActivityView =
+    monoViewSession && selectedMonoActivity ? (
+      <MonoActivityView
+        key={selectedMonoActivity.turnId}
         blocks={selectedMonoActivity.blocks}
         live={selectedMonoActivity.live}
         cwd={sessionWorkCwd(monoViewSession)}
-        onClose={() => setMonoActivity(null)}
         onApproval={
           monoViewSession.worktreeRemoved
             ? undefined
@@ -12513,7 +12744,6 @@ function Workspace({
         }
         onOpenFile={onOpenFile}
         onOpenDiff={onOpenDiff}
-        windowControls={monoCovers && !IS_MAC ? <WindowControls /> : undefined}
       />
     ) : null;
   // Status for the cards of the sessions the open Mono launched, rebuilt only
@@ -12619,7 +12849,7 @@ function Workspace({
     monoViewMono && monoViewSession ? (
       <MonoOverview
         key={monoViewMono.id}
-        open={monoOverviewShown}
+        open={monoOverviewOpen}
         monoId={monoViewMono.id}
         cwd={monoViewSession.cwd}
         agent={monoLook(monoViewMono)}
@@ -12628,6 +12858,7 @@ function Workspace({
         sessions={sessions}
         history={history}
         documents={monoDocuments}
+        activity={monoActivityView}
         changes={{
           sessionId: monoViewSession.id,
           cwd: monoViewCwd,
@@ -12729,8 +12960,6 @@ function Workspace({
             onOpen: onOpenRailMono,
             onCreate: onCreateMono,
             onDelete: onDeleteRailMono,
-            // Release notes come first; the intro waits its turn.
-            introAvailable: !whatsNewVersion,
           }
         : undefined,
     [
@@ -12740,7 +12969,6 @@ function Workspace({
       onOpenRailMono,
       onCreateMono,
       onDeleteRailMono,
-      whatsNewVersion,
     ],
   );
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
@@ -12767,19 +12995,16 @@ function Workspace({
       }
       onToggleMonoOverview={
         monoCovers
-          ? () => {
-              setMonoActivity(null);
-                      setMonoOverviewOpen(!monoOverviewShown);
-            }
+          ? () => setMonoOverviewOpen(!monoOverviewOpen)
           : undefined
       }
-      monoOverviewOpen={monoOverviewShown}
+      monoOverviewOpen={monoOverviewOpen}
       onOpenMonoSettings={
         monoCovers && monoViewMono
           ? () => setMonoSettingsFor(monoViewMono.id)
           : undefined
       }
-      hideWindowControls={monoCovers && monoSidebarOpen && !!monoOverviewPanel}
+      hideWindowControls={monoCovers && monoOverviewOpen && !!monoOverviewPanel}
       activeId={monoViewSession ? "" : activeTabId}
       cwd={sidebarCwd}
       projectRailOpen={projectRailOpen}
@@ -12793,11 +13018,13 @@ function Workspace({
       onToggleSessionSidebar={onToggleSessionSidebar}
       onSelect={activateTab}
       onNewTerminal={onNewTerminal}
+      onNewProfileTerminal={onNewProfileTerminal}
       onOpenSettings={onOpenSettings}
       onOpenInbox={onOpenInbox}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
       onClose={onCloseTitleTab}
       onCloseMany={onCloseTabs}
+      onCloseAll={onCloseEveryTab}
       onArchiveTab={onArchiveTitleTab}
       onDeleteTab={onDeleteTitleTab}
       onReorder={onReorderTabs}
@@ -12903,6 +13130,8 @@ function Workspace({
               monos={sidebarMonos}
               monoViewActive={monoCovers}
               onNew={onNew}
+              onNewTerminalTab={onNewTerminalTab}
+              onNewProfileTerminal={onNewProfileTerminal}
               openSessions={openProjectSessions}
               onNewTerminal={onNewTerminal}
               onSearch={onOpenSearch}
@@ -12963,8 +13192,11 @@ function Workspace({
               >
                 {!IS_MAC ? (
                   <MenuBar
-                    onNew={onNew}
+                    onNew={onNewTab}
                     onNewTerminal={onNewTerminal}
+                    onNewTerminalTab={onNewTerminalTab}
+                    onNewSession={onNew}
+                    onNewProfileTerminal={onNewProfileTerminal}
                     onToggleTerminal={onToggleProjectTerminal}
                     onGoToFile={onGoToFile}
                     onToggleSidebar={onToggleSidebar}
@@ -13028,6 +13260,7 @@ function Workspace({
                                 onSizePaint={paintDockSize}
                                 onSizeCommit={commitDockSize}
                                 onAddTerminal={onNewTerminal}
+                                onAddProfileTerminal={onNewDockProfileTerminal}
                                 onSelectTerminal={onSelectProjectTerminal}
                                 onCloseTerminal={onCloseProjectTerminal}
                                 onCloseOtherTerminals={
@@ -13153,7 +13386,7 @@ function Workspace({
                                       onOpenDiff={onOpenMonoDiff}
                                       onCommitChanges={onCommitMonoChanges}
                                       monoActivityTurnId={
-                                        selectedMonoActivity?.turnId
+                                        monoActivityShownTurnId
                                       }
                                       onOpenMonoSession={onOpenMonoSession}
                                       monoLaunchedSessions={
@@ -13200,7 +13433,6 @@ function Workspace({
                   </div>
                   {monoCovers ? monoOverviewPanel : null}
                   {monoSettingsDialog}
-                  {monoCovers ? monoActivityPanel : null}
                 </div>
               </div>
               {searchViewOpen ? (
@@ -13342,15 +13574,18 @@ function Workspace({
                       ? onNewTerminal
                       : undefined
                   }
-                  onShowTerminal={
+                  onToggleProjectTerminal={
                     !monoCovers && isLocalProject(projectCwd)
-                      ? onShowProjectTerminal
+                      ? onToggleProjectTerminal
                       : undefined
                   }
                   projectTerminalActive={
                     !monoCovers &&
                     !!currentProjectDock &&
                     currentProjectDock.pane.files.length > 0
+                  }
+                  projectTerminalOpen={
+                    !monoCovers && !!currentProjectDock?.open
                   }
                 />
               )}
@@ -13613,6 +13848,10 @@ function toTitleTab(
       ),
     ),
     terminal: hasTerminal && harnesses.length === 0,
+    terminalProfile:
+      harnesses.length === 0 && focusedFile?.terminal
+        ? focusedFile.profile
+        : undefined,
     previewFileId: previewWorkspaceFile(tab)?.id,
     groupId: tab.groupId,
   };

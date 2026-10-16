@@ -257,6 +257,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "editor open top workspace normal session pane beside chat",
   },
   {
+    id: "new-tab",
+    section: "general",
+    label: "New tab opens",
+    keywords: "default terminal shell claude code codex opencode cli chat cmd-t",
+  },
+  {
     id: "tab-animations",
     section: "general",
     label: "Tab animations",
@@ -1085,6 +1091,7 @@ export type KeybindingRow = {
   command: string;
   keys: string;
   when: string;
+  fixed?: true;
 };
 
 /**
@@ -1099,6 +1106,7 @@ export const KEYBINDINGS: KeybindingRow[] = [
   { command: "App: Command Palette", keys: `${MOD}${SHIFT}P`, when: "Always" },
   { command: "App: Find in Files", keys: `${MOD}${SHIFT}F`, when: "Always" },
   { command: "App: Open Project", keys: `${MOD}O`, when: "Always" },
+  { command: "App: New Session", keys: `${MOD}N`, when: "Always" },
   { command: "App: New Window", keys: `${MOD}${SHIFT}N`, when: "Always" },
   ...(IS_MAC
     ? [
@@ -1147,6 +1155,12 @@ export const KEYBINDINGS: KeybindingRow[] = [
     when: "sessionFocus && !overlay",
   },
   {
+    command: "Session: Stop",
+    keys: "Esc",
+    when: "sessionBusy && !terminalFocus",
+    fixed: true,
+  },
+  {
     command: "Session: Previous",
     keys: `${MOD}${SHIFT}↑`,
     when: "!overlay && (!textFocus || emptyComposer)",
@@ -1188,7 +1202,7 @@ export const KEYBINDINGS: KeybindingRow[] = [
   { command: "Pane: Focus Up", keys: `${MOD}${ALT}↑`, when: "Always" },
   { command: "Pane: Focus Down", keys: `${MOD}${ALT}↓`, when: "Always" },
   { command: "Terminal: New", keys: `${MOD}\``, when: "Always" },
-  { command: "Terminal: New Tab", keys: `${MOD}${SHIFT}\``, when: "Always" },
+  { command: "Terminal: New Tab", keys: `${MOD}${SHIFT}T`, when: "Always" },
   { command: "Terminal: Toggle Dock", keys: `${MOD}J`, when: "Always" },
   { command: "Editor: Find", keys: `${MOD}F`, when: "editorFocus" },
   { command: "Editor: Replace", keys: `${MOD}${ALT}F`, when: "editorFocus" },
@@ -1204,7 +1218,9 @@ export type KeybindingOverride = {
 
 export type KeybindingOverrides = Record<string, KeybindingOverride>;
 
-const VALID_COMMANDS = new Set(KEYBINDINGS.map((row) => row.command));
+const VALID_COMMANDS = new Set(
+  KEYBINDINGS.filter((row) => !row.fixed).map((row) => row.command),
+);
 
 const KEY_CODES: Record<string, string> = {
   " ": "Space",

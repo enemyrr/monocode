@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 32] = [
+const APP_ACTIONS: [&str; 33] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -92,6 +92,7 @@ const APP_ACTIONS: [&str; 32] = [
     "sessions.stop",
     "sessions.archive",
     "sessions.delete",
+    "sessions.delegate",
     "worktrees.list",
     "worktrees.create",
     "folders.list",
@@ -191,6 +192,20 @@ Actions:
                   stop, archive and delete cannot target the calling session,
                   Mono chats, habit runs or orchestration workers. Sessions
                   must belong to the chosen project.
+  sessions.delegate {"prompt":"Self-contained task","harness":"codex",
+                  "model":"codex:...","title":"Short name",
+                  "workspaceMode":"current","worktreeCwd":"<path>"}
+                  Hand a task to another agent instead of running its CLI in
+                  a shell. The child runs in the background as a subagent of
+                  your current turn; its final answer comes back to this
+                  conversation as a MonoCode notification once it finishes and
+                  you are idle. Do not poll it. title, model, effort,
+                  modelSettings, runtimeMode and the workspace choice are
+                  optional and work as in sessions.start. Not for Monos.
+                  At most 6 delegated sessions work for one session at once;
+                  a further call fails until one reports back. After 10
+                  results in a row with no user message, results wait for
+                  the user to resume the queue. Reuse --request-id on retries.
   worktrees.list {}  Working copies in this project, with paths and branches.
   worktrees.create {"branch":"feature/name","base":"HEAD","existing":false}
                   Create a worktree on a named new branch from base (a branch
@@ -638,6 +653,7 @@ mod tests {
             "sessions.stop",
             "sessions.archive",
             "sessions.delete",
+            "sessions.delegate",
         ] {
             assert!(matches!(
                 parse_args_for(&args(&[action, "--json", r#"{"sessionId":"other"}"#]), true),

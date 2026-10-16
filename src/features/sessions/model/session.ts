@@ -54,6 +54,21 @@ export type BlockRole =
   | "system"
   | "handoff";
 
+/** The parent turn a `sessions.delegate` child reports back to. */
+export type DelegatedBy = {
+  sessionId: string;
+  /** The parent's subagent row for this child. */
+  blockId: string;
+};
+
+/** A parent's subagent row standing for a session it delegated. */
+export type DelegationMeta = {
+  sessionId: string;
+  harness: HarnessId;
+  /** The child's result reached the parent; it is never handed over twice. */
+  delivered?: boolean;
+};
+
 /** A session created by a Mono during this conversation turn. */
 export type MonoSpawnedSession = {
   sessionId: string;
@@ -95,6 +110,8 @@ export type ComposerTurnOptions = {
   onResendRejected?: (recovery: EditedResendRejection) => void;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** Sent to the agent in place of the visible text, shown collapsed under it. */
+  instructions?: string;
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";
@@ -232,6 +249,10 @@ export type AgentRunMeta = {
   agentType?: string;
   /** Model reported for the child, which may differ from its parent. */
   model?: string;
+  /** Reasoning effort the provider reports for the child, e.g. "high". */
+  effort?: string;
+  /** Total tokens the child has used so far, as the provider counts them. */
+  tokens?: number;
   steps: AgentStep[];
 };
 
@@ -275,6 +296,7 @@ export type QueuedMessage = {
   blockId?: string;
   text: string;
   attachments: Attachment[];
+  instructions?: string;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
   intent?: TurnIntent;
@@ -356,6 +378,12 @@ export type Block = {
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
+  /** A subagent row backed by a separate MonoCode session. */
+  delegation?: DelegationMeta;
+  /** Persists `Session.delegatedBy` on the child's first user turn. */
+  delegatedBy?: DelegatedBy;
+  /** The user stopped this turn before it finished; user blocks only. */
+  stopped?: boolean;
   taskList?: TaskListMeta;
   plan?: PlanBlockMeta;
   orchestration?: OrchestrationProposal;
@@ -378,7 +406,7 @@ export type Block = {
   noteCard?: NoteCardMeta;
   /** Saved artifacts attached to this turn; their bodies live outside chat. */
   artifactCards?: import("../../artifacts/artifacts").ArtifactCard[];
-  /** Exact CI repair instructions and evidence supplied with this user turn. */
+  /** Exact instructions sent with this user turn, such as CI repair evidence. */
   ciContext?: string;
   /** Mid-turn interjection chrome; system blocks only. Body lives in text. */
   interjection?: InterjectionMeta;
@@ -387,6 +415,8 @@ export type Block = {
    * rather than turn chrome like a status ping. Never folds into the trail.
    */
   notice?: "error" | "interrupt";
+  /** A `!<command>` the user ran; system blocks only. */
+  shellRun?: import("./shell-command").ShellRunMeta;
   statusKey?: string;
   /** Posted to a Mono's chat by one of its habits, outside any turn. */
   monoHabit?: { id: string; name: string; at: number };
@@ -443,6 +473,8 @@ export type Session = {
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */
   orchestrationLeadId?: string;
+  /** Started by another session's `sessions.delegate`; reports back to it. */
+  delegatedBy?: DelegatedBy;
   /** Temporary Inbox conversation: shares the runtime, never saved as a session. */
   inboxAsk?: InboxAskContext;
   id: string;
@@ -668,6 +700,9 @@ export function retargetSessionToProject(
     ...(harness === session.harness
       ? {}
       : { providerSessionId: undefined, providerAccountId: undefined }),
+    // The account was chosen for the old project. The new project reads its
+    // own stored choice, so a stamp carried over would show the wrong account.
+    ...(cwd === session.cwd ? {} : { providerAccountId: undefined }),
     ...(resolved.id === session.model
       ? {}
       : { context: dropContextWindow(session.context) }),
@@ -731,6 +766,25 @@ export function canReplaceSessionTitle(
 
 export function hasPendingApproval(blocks: Block[]): boolean {
   return blocks.some((block) => block.approval && !block.approval.decided);
+}
+
+/** The user block that opened the latest turn; a mid-turn message joins it. */
+export function latestTurnStart(blocks: readonly Block[]): number {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (block.role === "user" && block.sentAt == null) return index;
+  }
+  return -1;
+}
+
+/** Records a user stop on the latest turn, so it never reads as finished. */
+export function markTurnStopped(session: Session): Session {
+  const start = latestTurnStart(session.blocks);
+  const user = session.blocks[start];
+  if (!user || user.draft || user.stopped) return session;
+  const blocks = session.blocks.slice();
+  blocks[start] = { ...user, stopped: true };
+  return { ...session, blocks };
 }
 
 export function sessionNeedsInput(session: Session): boolean {

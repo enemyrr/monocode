@@ -14,6 +14,7 @@ import {
   buildClaudeUserMessage,
   inputJsonDeltaFromEvent,
   isClaudeUltracodeEffort,
+  agentSettingsFromInput,
   normalizeClaudeCliEffort,
   parseJsonLine,
   previewFromTool,
@@ -396,9 +397,7 @@ function handleStreamEvent(
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentSettingsFromInput(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -419,9 +418,7 @@ function handleStreamEvent(
     callId: tool.id,
     title: tool.title,
     kind: toolKindFromName(tool.name),
-    ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-      ? { agentModel: stringField(tool.input, "model") }
-      : {}),
+    ...agentSettingsFromInput(tool.name, tool.input),
     status: "pending",
     detail: summarizeToolRequest(tool.name, parsed),
     preview: previewFromTool(tool.name, parsed),

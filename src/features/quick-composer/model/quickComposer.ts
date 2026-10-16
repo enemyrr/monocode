@@ -27,6 +27,7 @@ import {
   type RuntimeMode,
   type WorkspaceMode,
   type Attachment,
+  type DelegatedBy,
   harnessSupportsAttachments,
   type HarnessId,
 } from "../../sessions/model/session";
@@ -54,6 +55,8 @@ export type QuickChoice = { harness: HarnessId; model: string };
 export type QuickLaunch = {
   /** Mono's visibility preference, captured before creating the session. */
   sidebarHidden?: boolean;
+  /** The parent turn of a `sessions.delegate` child. */
+  delegatedBy?: DelegatedBy;
   prompt: string;
   /** Create an unsent user draft instead of starting an agent turn. */
   draft?: boolean;
